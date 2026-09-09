@@ -105,3 +105,53 @@ documentation rule was rewritten to match.
 
 ### D19. `DECISIONS.md` lives at the repository root
 Next to `CLAUDE.md` so it is found on first open rather than buried in `docs/`.
+
+## 2026-09-09 — Wire protocol
+
+### D20. One `Event` type for both encodings, codecs own all formatting
+`internal/protocol` defines `Event`/`Command` and two codecs behind
+`Encoder`/`Decoder`. The hub builds `protocol.Event` values and never formats a
+string; each client holds the codec it negotiated, so the same broadcast reaches
+a telnet user as `[15:04] alice: hi` and a JSON user as one object. Adding a
+third encoding is a new codec and nothing else. Revisit if an encoding needs
+semantics the shared `Event` cannot express.
+
+### D21. Negotiation is one magic first line, not a handshake
+The first line a client sends is compared against `HELLO hearth/1 json`;
+anything else is its name in text mode. That keeps telnet working with no
+sniffing heuristics and no version matrix. The cost is that the server must send
+its greeting before it knows the encoding, so a JSON client reads exactly one
+text line first — documented in `docs/PROTOCOL.md`. Revisit if a second
+negotiable option appears, which would want a real capability exchange.
+
+### D22. The name is supplied by `nick`, in both encodings
+Text clients answer the prompt with a bare line, which decodes as `say`; JSON
+clients send `{"cmd":"nick","args":["alice"]}`. The naming state accepts either,
+so there is one naming path instead of one per encoding.
+
+### D23. `seq` is per connection and assigned at write time
+`writeEvent` stamps it, so numbers are dense and monotonic in delivery order on
+that connection, and events dropped for a slow client never consume one. A
+global sequence would leak fan-out order and make gaps normal. Consequence:
+`seq` detects reordering, not loss — clients cannot use it to request a resend.
+
+### D24. Unknown commands are rejected by the codec, not the server
+The command vocabulary lives in one table in `internal/protocol`, so both
+codecs accept exactly the same set. `Decode` returns `ErrUnknownCommand` with
+the parsed name still in `Command.Name` so the server can name it in the error
+event. Consequence: the telnet error lost its slash — `! unknown command dance
+(try /help)` — because the name is now encoding-independent.
+
+### D25. Rooms are a client field; history is 50 messages and dies with the room
+No room registry, no persistence: `broadcast` filters the client set by room,
+`/rooms` derives the list from it, and a room's history is discarded when its
+last member leaves. That is the smallest thing that makes rooms work and keeps
+memory bounded without a store. Revisit when history has to outlive a room or a
+restart, which means real storage.
+
+### D26. `gocritic` size thresholds raised to 160 bytes
+`Event` is 136 bytes, so `hugeParam`/`rangeValCopy` fired on the `Encode(w,
+Event)` signature. The interface takes an event by value on purpose — events are
+immutable snapshots fanned out to many clients, and a pointer would invite one
+client's codec to mutate what another is about to render. The lint threshold
+moved instead of the design, and the checks still fire above 160 bytes.

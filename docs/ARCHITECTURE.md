@@ -3,11 +3,12 @@
 ## Overview
 
 - The server runs an accept loop that hands each accepted `net.Conn` to a connection handler.
-- Exactly one hub goroutine owns all shared state (the set of clients); nothing else touches it.
+- Exactly one hub goroutine owns all shared state (the set of clients, their names and rooms, and per-room history); nothing else touches it.
 - Each client gets two goroutines: a reader that parses lines from the socket and a writer that drains an outbound channel.
 - All communication between the hub and clients is by channel, so there are no locks on chat state.
-- Outbound channels are buffered (32 lines). Fan-out is non-blocking: a client that cannot keep up has messages dropped and counted, and the 5s write deadline eventually disconnects one that is truly stuck.
-- Protocol negotiation (text vs JSON lines) is planned; today only the text protocol exists. `internal/protocol` will own framing and message types.
+- Outbound channels are buffered (32 events). Fan-out is non-blocking: a client that cannot keep up has messages dropped and counted, and the 5s write deadline eventually disconnects one that is truly stuck.
+- `internal/protocol` owns the wire format: `Event`, `Command`, the `Encoder`/`Decoder` interfaces and the two codecs. The server passes `protocol.Event` values around and never formats a string for the wire; rendering happens inside the codec a client owns.
+- Each connection negotiates its encoding once (text or JSON lines) and keeps it. `internal/server/session.go` is the negotiating -> naming -> chatting state machine.
 - Shutdown is context-driven: cancelling the server context stops the accept loop, then the hub, then the connections.
 - The terminal client will be a thin TUI over `pkg/client`, the public library that handles dialing, negotiation and delivery.
 
@@ -19,18 +20,23 @@ accept loop            handleConn goroutine            hub goroutine          wr
 Accept() ──────────▶  active++ ; over MaxClients?
                        └─ yes: write "! server full", close, return
                        write name prompt (direct)
-                       readLine ─▶ validateName
+                       readLine ─▶ HELLO? ─▶ switch codec, reply "protocol json"
+                              ─▶ decode ─▶ validateName
                        join ──────────────────────▶  name taken? reply err
                        (repeat until nil)  ◀────────  else add to map, reply nil
-                       say("* alice joined") ──────▶  fan-out via trySend
+                       (hub emits Join itself) ────▶  fan-out via trySend
                        start writeLoop ──────────────────────────────────────▶ range over send
                        readLoop:
-                         line ─▶ command (/who: request+reply chan, /quit, /help)
-                              ─▶ say("[15:04] alice: text") ──▶ fan-out via trySend ──▶ send chan ──▶ conn.Write
+                         line ─▶ dec.Decode ─▶ Command
+                              ─▶ /quit, /help answered locally
+                              ─▶ hub.do(cmd) ──▶ hub applies it, fans out Events,
+                                                 returns Events for this client
+                                                 ──▶ send chan ──▶ enc.Encode ──▶ conn.Write
                        readLoop returns (EOF, /quit, idle, error)
-                       leave(c) ──────────────────▶  delete from map; close(c.send)
+                       leave(c) ──────────────────▶  delete from map; close(c.send);
+                                                     emit Leave to the room
                        wait writerDone                                          ◀── send drained, range ends,
-                       say("* alice left")                                            conn.Close()
+                                                                                    conn.Close()
                        active--
 ```
 
@@ -51,6 +57,10 @@ The per-connection unwind is always the same sequence, whether triggered by the 
 
 The read is interrupted with `SetReadDeadline(now)` rather than `conn.Close()` so that the writer, not the reader, is the only thing that closes a connection. That keeps `Close` single-owner and lets the shutdown notice reach the client before the socket goes away.
 
+## Rooms and history
+
+Rooms are a field on the client, not a second index: `broadcast` walks the client set and delivers to whoever is in the event's room. An event with an empty `Room` is not broadcast at all; it goes straight to the one client it answers. `/rooms` derives the room list from the clients, so a room exists exactly while someone is in it. Per-room history is the last 50 messages, replayed on join, and dropped when the room empties. All of it is O(clients) per message, which is the right shape until the client count stops fitting in one goroutine's budget.
+
 ## Why there is no mutex on chat state
 
 The client set is touched by exactly one goroutine, the hub. Joining, leaving, broadcasting and `/who` are all messages to that goroutine; anything that needs an answer sends its own reply channel and waits. That gives three properties for free:
@@ -63,3 +73,7 @@ Two pieces of state live outside the hub and are documented where they sit:
 
 - `Server.active` (open-connection count) is an `atomic.Int32` so the `MaxClients` check on the accept path needs no round trip to the hub.
 - `client.mu` guards `closed` and `dropped` and serialises `trySend` against `closeSend`. The client's own read goroutine also writes to `send` (command replies), so the hub cannot be the sole writer; the tiny mutex is what makes closing the channel safe.
+
+`client.name` and `client.room` need no lock even though two goroutines touch the struct: the connection goroutine writes them during the handshake, before the hub has ever seen the client, and from `join` onward only the hub goroutine reads or writes them (`/nick`, `/join`). The connection goroutine reads `name` once, immediately after `join` returns, for its logger.
+
+`client.enc`, `client.dec` and `client.seq` are single-writer by construction: the connection goroutine sets the codec during negotiation and writes the handshake events itself, then starts `writeLoop`, which is the only goroutine to touch `seq` afterwards. The `go` statement provides the happens-before edge. That is what makes `seq` monotonic per connection with no counter lock.

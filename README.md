@@ -13,9 +13,13 @@ make run-server              # listens on :4000
 telnet localhost 4000        # in two other terminals; nc also works
 ```
 
-Enter a name when prompted, then type. `/who` lists users, `/quit` leaves,
-`/help` lists commands. Flags: `hearth serve --addr :4000 --max-clients 100
---idle-timeout 5m`.
+Enter a name when prompted, then type. `/who` lists users, `/join <room>` moves
+rooms, `/msg <name> <text>` is private, `/quit` leaves, `/help` lists commands.
+Flags: `hearth serve --addr :4000 --max-clients 100 --idle-timeout 5m`.
+
+Programs should speak the JSON encoding instead: send `HELLO hearth/1 json` as
+the first line and every line in both directions becomes one JSON object. See
+[docs/PROTOCOL.md](docs/PROTOCOL.md), which has a working Python client.
 
 ## Features
 
@@ -35,6 +39,7 @@ Requires Go 1.24+.
 
 ```sh
 make check   # fmt, vet, lint, test -race
+make fuzz    # fuzz both protocol decoders, 10s each
 make build   # -> bin/hearth
 ```
 
