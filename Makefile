@@ -5,13 +5,17 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
-.PHONY: build test lint fmt vet check run-server run-client clean
+.PHONY: build test fuzz lint fmt vet check run-server run-client clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/hearth
 
 test:
 	go test -race -count=1 ./...
+
+fuzz:
+	go test ./internal/protocol -run '^$$' -fuzz FuzzJSONDecode -fuzztime 10s
+	go test ./internal/protocol -run '^$$' -fuzz FuzzTextDecode -fuzztime 10s
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
