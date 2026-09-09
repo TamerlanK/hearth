@@ -20,6 +20,8 @@ cmd/hearth/        thin entrypoint, no logic
 internal/cli/      cobra commands
 internal/server/   accept loop, hub, connection handling
 internal/protocol/ wire format: framing, message types, negotiation
+internal/ratelimit/ token bucket, one per connection
+internal/ring/     generic fixed-capacity ring buffer
 internal/tui/      terminal UI
 pkg/client/        public Go client library
 docs/              ARCHITECTURE.md, PROTOCOL.md

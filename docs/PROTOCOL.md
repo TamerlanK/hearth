@@ -65,6 +65,9 @@ client                                   server
    unique across the server. A rejected name gets an `error` event and another
    attempt; the connection stays in the naming state until a name is accepted.
    Accepted commands while naming are `say` (in text: a bare line) and `nick`.
+   **The whole handshake — negotiation and naming together — must finish within
+   10 seconds**, however many name attempts it takes, or the connection is
+   closed without a message. The idle timeout applies only afterwards.
 
 4. Once named, the client is in the default room `#general` and every command
    below is available.
@@ -114,11 +117,21 @@ Parsing rules that a client implementer needs:
 - An empty line is a `say` with empty text, which the server ignores. Send
   nothing rather than relying on this.
 - Room names are normalised to a leading `#`: `golang` and `#golang` are the
-  same room. A room name is 1–24 printable characters, no whitespace.
+  same room. A room name is 1–24 characters of `a-z`, `0-9` and `-`; anything
+  else is rejected. Rooms are created on first `join` and destroyed when the
+  last member leaves, except the default room, which always exists.
 - `quit` and `help` are answered by the connection itself and never reach the
   chat state; everything else is applied in the order received.
 - Control characters are stripped from message text before it is broadcast, so
-  no client can inject terminal escapes into another client's terminal.
+  no client can inject terminal escapes into another client's terminal. **Tab
+  (U+0009) is the one exception** and is passed through; it cannot break the
+  one-event-one-line rule the way `\n` and `\r` would.
+- **A message is at most 1024 runes**, counted after decoding. This is separate
+  from the 4096-byte line cap: a line within the byte limit can still be
+  rejected for length, and the connection stays open when it is.
+- The server may rate limit a client. Lines over the limit are discarded
+  without being applied, and the client is told once per flood rather than once
+  per line, so an `error` event is not a reliable per-line acknowledgement.
 
 ## Events (server → client)
 
@@ -159,7 +172,7 @@ The examples below use `Z` for brevity.
 | `leave` | `room` `from` | Someone left a room, including on disconnect | `* bob left #general` |
 | `nick` | `room` `from` `to` | Rename; `from` is the old name | `* bob is now known as robert` |
 | `who` | `room` `names` | Reply to `who`, sorted | `* online in #general (2): alice, bob` |
-| `rooms` | `names` | Reply to `rooms`, sorted, non-empty rooms only | `* rooms (2): #general, #golang` |
+| `rooms` | `names` | Reply to `rooms`, sorted; each name carries its member count | `* rooms (2): #general (2), #golang (1)` |
 | `history` | `room` `from` `text` | A replayed past message | `[15:04] alice: earlier message` |
 | `error` | `text` | Something the client asked for failed | `! name taken, try another:` |
 | `pong` | — | Reply to `ping` | `* pong` |
@@ -174,11 +187,21 @@ JSON examples, one per kind:
 {"kind":"leave","room":"#general","from":"bob","time":"2026-09-09T15:04:05Z","seq":9}
 {"kind":"nick","room":"#general","from":"bob","to":"robert","time":"2026-09-09T15:04:05Z","seq":10}
 {"kind":"who","room":"#general","names":["alice","bob"],"time":"2026-09-09T15:04:05Z","seq":11}
-{"kind":"rooms","names":["#general","#golang"],"time":"2026-09-09T15:04:05Z","seq":12}
+{"kind":"rooms","names":["#general (2)","#golang (1)"],"time":"2026-09-09T15:04:05Z","seq":12}
 {"kind":"history","room":"#general","from":"alice","text":"earlier message","time":"2026-09-09T14:58:01Z","seq":4}
 {"kind":"error","text":"name taken, try another:","time":"2026-09-09T15:04:05Z","seq":5}
 {"kind":"pong","time":"2026-09-09T15:04:05Z","seq":13}
 ```
+
+Each entry in a `rooms` reply is `"<room> (<members>)"` — the count is part of
+the string rather than a parallel array, so a client that only displays the list
+needs no extra field. The default room appears even when it is empty.
+
+History is **replayed in order as one `history` event per past message**, not
+nested inside a single envelope event. That keeps every kind one flat line and
+lets a client render a replayed message with exactly the code that renders a
+live one; the cost is that a replay is *n* lines, bounded by the server's
+history size.
 
 In the text encoding `history` renders exactly like `msg`; a text user sees the
 replay as ordinary chat lines with their original timestamps. Only JSON clients
@@ -192,10 +215,15 @@ can tell replay from live traffic.
 - `msg`, `join`, `leave` and `nick` events go only to clients in that `room`.
   An event with no `room` (`privmsg`, `system`, `who`, `rooms`, `pong`,
   `error`) goes only to the client it concerns.
-- The server keeps the **last 50 messages per room in memory**, replayed on
-  join and on `history`. It is not durable: when the last member leaves a room,
-  that room's history is discarded, and nothing survives a restart. `history`
-  for a room with nothing stored answers with a `system` event.
+- The server keeps the **last N messages per room in memory** (50 by default,
+  set by the operator), replayed on join and on `history`. Only `say` messages
+  are recorded; joins, leaves, renames and private messages are not. It is not
+  durable: when the last member leaves a room the room and its history are
+  discarded, and nothing survives a restart. `history` for a room with nothing
+  stored answers with a `system` event.
+- The number of rooms that can exist at once may be capped by the operator. A
+  `join` that would create a room beyond the cap is refused with an `error`;
+  joining a room that already exists is always allowed.
 
 ## Error handling
 
@@ -207,14 +235,20 @@ and may try again.
 |-----------|--------------|------------|
 | Unparseable line (bad JSON, invalid UTF-8) | `malformed line` | stays open |
 | Command name not in the table above | `unknown command dance (try /help)` | stays open |
-| Wrong argument count | `usage: /msg <name> <text>` | stays open |
+| Wrong argument count | `usage: /msg <name> <text>` (from the command table, so it always matches `/help`) | stays open |
 | Name rejected while naming | `name is empty, try again:`, `name must be printable with no spaces, try again:` | stays open |
 | Name already in use | `name taken, try another:` (naming) / `name taken` (`nick`) | stays open |
 | Unknown recipient for `msg` | `no such user bob` | stays open |
-| Bad room name | `room name must be printable with no spaces` | stays open |
+| Bad room name | `room name must be 1-24 characters of a-z, 0-9 or -` | stays open |
 | Already in the requested room | `already in #general` | stays open |
+| `join` would exceed the room cap | `too many rooms, limit is 64` | stays open |
+| Message longer than 1024 runes | `message is longer than 1024 characters` | stays open |
+| Sending faster than the server's rate limit | `rate limited` (once per flood, not per line) | stays open |
 | Line longer than 4096 bytes | `line too long, disconnecting` | **closed** |
 | Server at capacity | `server full, try again later` | **closed** (before the prompt) |
+| Too many connections from your address | `too many connections from your address` | **closed** (before the prompt) |
+| Handshake not completed within 10s | *(none)* | **closed** |
+| Too many events dropped in a row | `too many dropped messages, disconnecting` (best effort) | **closed** |
 | Idle longer than the server's timeout | `disconnected: idle for 5m0s` (a `system` event) | **closed** |
 
 The server also sends `* server shutting down` (a `system` event) to everyone
@@ -228,6 +262,17 @@ does not stall anyone else: its buffer fills, further events are **dropped**
 for that client only, and once the 5-second write deadline expires it is
 disconnected. Chat delivery is therefore best-effort, not guaranteed. Read
 continuously; do not use the socket as a queue.
+
+A client that accumulates too many dropped events in a row (100 by default) is
+disconnected rather than left in a permanently degraded state. The server tries
+to send `! too many dropped messages, disconnecting` first, but by definition
+that client is not reading, so the notice often does not arrive — treat an
+unexplained close after a burst as this case.
+
+Inbound, each connection has a token bucket (5 lines per second, burst 10, by
+default). It is checked **before** the line is decoded, so malformed and valid
+lines cost the same. Over-limit lines are discarded, and the server emits one
+`error` event per flood rather than one per line.
 
 ## Compatibility
 
