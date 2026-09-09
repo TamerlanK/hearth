@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/TamerlanK/hearth/internal/protocol"
 )
 
 const wait = 2 * time.Second
@@ -270,5 +273,139 @@ func TestTrySendDropsWhenFull(t *testing.T) {
 	c.closeSend()
 	if c.trySend(systemEvent("after close")) {
 		t.Error("send after close should be dropped")
+	}
+}
+
+func dialJSON(t *testing.T, addr, name string) *tconn {
+	t.Helper()
+	c := connect(t, addr)
+	expectLine(t, c, "Enter a name", wait)
+	send(t, c, protocol.Hello)
+	if e := expectEvent(t, c, protocol.System, wait); e.Text != "protocol json" {
+		t.Fatalf("negotiation reply = %q, want %q", e.Text, "protocol json")
+	}
+	send(t, c, fmt.Sprintf(`{"cmd":"nick","args":[%q]}`, name))
+	return c
+}
+
+func expectEvent(t *testing.T, c *tconn, kind protocol.Kind, timeout time.Duration) protocol.Event {
+	t.Helper()
+	if err := c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	var lastSeq uint64
+	for {
+		line, err := c.r.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("waiting for %s event: %v", kind, err)
+		}
+		var e protocol.Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			t.Fatalf("client got a non-json line %q: %v", line, err)
+		}
+		if e.Seq <= lastSeq {
+			t.Fatalf("seq %d is not greater than previous %d", e.Seq, lastSeq)
+		}
+		lastSeq = e.Seq
+		if e.Kind == kind {
+			return e
+		}
+	}
+}
+
+func TestJSONAndTextClientsShareRoom(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	alice := dial(t, addr, "alice")
+	expectLine(t, alice, "* alice joined #general", wait)
+
+	jason := dialJSON(t, addr, "jason")
+	if e := expectEvent(t, jason, protocol.Join, wait); e.From != "jason" || e.Room != defaultRoom {
+		t.Fatalf("join event = %+v, want jason in %s", e, defaultRoom)
+	}
+	expectLine(t, alice, "* jason joined #general", wait)
+
+	send(t, alice, "hello room")
+	got := expectEvent(t, jason, protocol.Msg, wait)
+	if got.From != "alice" || got.Text != "hello room" || got.Room != defaultRoom {
+		t.Errorf("json client got %+v, want alice/hello room/%s", got, defaultRoom)
+	}
+	if got.Time.IsZero() {
+		t.Error("event has no timestamp")
+	}
+
+	send(t, jason, `{"cmd":"say","text":"hi alice"}`)
+	if line := expectLine(t, alice, "jason: hi alice", wait); !strings.HasPrefix(line, "[") {
+		t.Errorf("text client message lacks timestamp prefix: %q", line)
+	}
+
+	send(t, alice, "/who")
+	expectLine(t, alice, "* online in #general (2): alice, jason", wait)
+	send(t, jason, `{"cmd":"who"}`)
+	if e := expectEvent(t, jason, protocol.Who, wait); strings.Join(e.Names, ",") != "alice,jason" {
+		t.Errorf("who names = %v, want [alice jason]", e.Names)
+	}
+}
+
+func TestRoomsIsolateMessages(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	alice := dial(t, addr, "alice")
+	bob := dial(t, addr, "bob")
+	expectLine(t, alice, "* bob joined #general", wait)
+
+	send(t, bob, "/join golang")
+	expectLine(t, bob, "* bob joined #golang", wait)
+	expectLine(t, alice, "* bob left #general", wait)
+
+	send(t, alice, "only general hears this")
+	send(t, alice, "/rooms")
+	expectLine(t, alice, "* rooms (2): #general, #golang", wait)
+
+	send(t, bob, "/who")
+	line := expectLine(t, bob, "* online in #golang", wait)
+	if strings.Contains(line, "alice") {
+		t.Errorf("/who in #golang leaked alice: %q", line)
+	}
+	send(t, bob, "/msg alice psst")
+	expectLine(t, bob, "bob -> alice: psst", wait)
+	expectLine(t, alice, "bob -> alice: psst", wait)
+}
+
+func TestHistoryReplayedOnJoin(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	alice := dial(t, addr, "alice")
+	expectLine(t, alice, "* alice joined #general", wait)
+	send(t, alice, "first")
+	expectLine(t, alice, "alice: first", wait)
+
+	bob := dialJSON(t, addr, "bob")
+	expectEvent(t, bob, protocol.Join, wait)
+	if e := expectEvent(t, bob, protocol.History, wait); e.Text != "first" || e.From != "alice" {
+		t.Errorf("history event = %+v, want alice/first", e)
+	}
+	send(t, bob, `{"cmd":"history"}`)
+	if e := expectEvent(t, bob, protocol.History, wait); e.Text != "first" {
+		t.Errorf("/history replay = %+v, want first", e)
+	}
+}
+
+func TestJSONClientErrorsAndPong(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	jason := dialJSON(t, addr, "jason")
+	expectEvent(t, jason, protocol.Join, wait)
+
+	send(t, jason, `{"cmd":"ping"}`)
+	expectEvent(t, jason, protocol.Pong, wait)
+
+	send(t, jason, `{"cmd":"dance"}`)
+	if e := expectEvent(t, jason, protocol.Error, wait); !strings.Contains(e.Text, "unknown command dance") {
+		t.Errorf("error event = %+v, want unknown command dance", e)
+	}
+	send(t, jason, `{"cmd":`)
+	if e := expectEvent(t, jason, protocol.Error, wait); !strings.Contains(e.Text, "malformed") {
+		t.Errorf("error event = %+v, want malformed", e)
+	}
+	send(t, jason, `{"cmd":"nick","args":["jason2"]}`)
+	if e := expectEvent(t, jason, protocol.Nick, wait); e.From != "jason" || e.To != "jason2" {
+		t.Errorf("nick event = %+v, want jason -> jason2", e)
 	}
 }
