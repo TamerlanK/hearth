@@ -7,36 +7,93 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/TamerlanK/hearth/internal/protocol"
 )
 
-const helpText = "commands: /say <text> (or just type), /msg <name> <text>, /join <room>, " +
-	"/nick <name>, /who [room], /rooms, /history [room], /ping, /quit, /help"
+var (
+	errServerFull    = errors.New("server full, try again later")
+	errTooManyFromIP = errors.New("too many connections from your address")
+	errPanic         = errors.New("connection handler panicked")
+)
 
 type Config struct {
 	MaxClients int
 
+	MaxClientsPerIP int
+
 	IdleTimeout time.Duration
 
+	HistorySize int
+
+	DefaultRoom string
+
+	MaxRooms int
+
+	MessagesPerSecond float64
+
+	Burst int
+
+	MaxDropsInARow int
+
 	Logger *slog.Logger
+
+	decorateDecoder func(protocol.Decoder) protocol.Decoder
+}
+
+func (c Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Int("max_clients", c.MaxClients),
+		slog.Int("max_clients_per_ip", c.MaxClientsPerIP),
+		slog.Duration("idle_timeout", c.IdleTimeout),
+		slog.Duration("handshake_timeout", handshakeTimeout),
+		slog.String("default_room", c.DefaultRoom),
+		slog.Int("history_size", c.HistorySize),
+		slog.Int("max_rooms", c.MaxRooms),
+		slog.Float64("messages_per_second", c.MessagesPerSecond),
+		slog.Int("burst", c.Burst),
+		slog.Int("max_drops_in_a_row", c.MaxDropsInARow),
+		slog.Int("max_message_runes", maxMessageRunes),
+	)
 }
 
 type Server struct {
-	cfg    Config
-	log    *slog.Logger
-	hub    *hub
-	active atomic.Int32
-	wg     sync.WaitGroup
+	cfg Config
+	log *slog.Logger
+	hub *hub
+	wg  sync.WaitGroup
+
+	mu     sync.Mutex
+	perIP  map[string]int
+	active int
 }
 
 func New(cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Server{cfg: cfg, log: cfg.Logger, hub: newHub()}
+	if cfg.HistorySize <= 0 {
+		cfg.HistorySize = defaultHistorySize
+	}
+	if cfg.DefaultRoom == "" {
+		cfg.DefaultRoom = defaultRoom
+	}
+	if cfg.MessagesPerSecond > 0 && cfg.Burst <= 0 {
+		cfg.Burst = 1
+	}
+	cfg.DefaultRoom = roomName(cfg.DefaultRoom)
+	if err := validateRoom(cfg.DefaultRoom); err != nil {
+		cfg.Logger.Warn("default room rejected, falling back",
+			"event", "config", "room", cfg.DefaultRoom, "err", err, "fallback", defaultRoom)
+		cfg.DefaultRoom = defaultRoom
+	}
+	return &Server{cfg: cfg, log: cfg.Logger, hub: newHub(cfg), perIP: make(map[string]int)}
+}
+
+func (s *Server) Config() Config {
+	return s.cfg
 }
 
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
@@ -51,7 +108,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		defer s.wg.Done()
 		<-ctx.Done()
 		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			s.log.Warn("close listener", "err", err)
+			s.log.Warn("close listener", "event", "shutdown", "err", err)
 		}
 	}()
 
@@ -76,20 +133,50 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return acceptErr
 }
 
-func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
-	log := s.log.With("remote", conn.RemoteAddr().String())
-	c := newClient(conn)
+func (s *Server) admit(host string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.MaxClients > 0 && s.active >= s.cfg.MaxClients {
+		return errServerFull
+	}
+	if s.cfg.MaxClientsPerIP > 0 && s.perIP[host] >= s.cfg.MaxClientsPerIP {
+		return errTooManyFromIP
+	}
+	s.active++
+	s.perIP[host]++
+	return nil
+}
 
-	if n := s.active.Add(1); s.cfg.MaxClients > 0 && int(n) > s.cfg.MaxClients {
-		s.active.Add(-1)
-		log.Info("rejected", "reason", "server full")
-		if err := c.writeEvent(errorEvent("server full, try again later")); err != nil {
-			log.Debug("write", "err", err)
+func (s *Server) release(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
+	if n := s.perIP[host] - 1; n > 0 {
+		s.perIP[host] = n
+	} else {
+		delete(s.perIP, host)
+	}
+}
+
+func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
+	c := newClient(conn, s.cfg)
+	host := remoteHost(conn)
+	log := s.log.With("client_id", c.id, "remote_addr", conn.RemoteAddr().String())
+	defer recoverPanic(log, "connection")
+
+	if err := s.admit(host); err != nil {
+		log.Info("connection rejected", "event", "reject", "reason", err.Error())
+		if werr := c.writeEvent(errorEvent(err.Error())); werr != nil {
+			log.Debug("write failed", "event", "write_error", "err", werr)
 		}
 		closeConn(conn, log)
 		return
 	}
-	defer s.active.Add(-1)
+	defer s.release(host)
+
+	connectionsTotal.Inc()
+	connectionsCurrent.Inc()
+	defer connectionsCurrent.Dec()
 
 	connDone := make(chan struct{})
 	defer close(connDone)
@@ -97,18 +184,20 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		select {
 		case <-ctx.Done():
 			c.interruptRead(log)
+		case <-c.overload:
+			c.interruptRead(log)
 		case <-connDone:
 		}
 	}()
 
-	if err := s.handshake(ctx, c); err != nil {
-		log.Info("handshake failed", "err", err)
+	name, err := s.handshake(ctx, c, log)
+	if err != nil {
+		log.Info("handshake failed", "event", "handshake_failed", "err", err)
 		closeConn(conn, log)
 		return
 	}
-	name := c.name
-	log = log.With("name", name)
-	log.Info("joined")
+	log = log.With("name", name, "room", s.cfg.DefaultRoom)
+	log.Info("client joined", "event", "join")
 
 	writerDone := make(chan struct{})
 	go func() {
@@ -116,18 +205,32 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		c.writeLoop(log)
 	}()
 
-	s.readLoop(ctx, c)
+	s.readLoop(ctx, c, log)
 	s.hub.leave(ctx, c)
 	<-writerDone
-	log.Info("left", "dropped", c.droppedCount())
+	log.Info("client left", "event", "leave", "dropped", c.droppedCount(), "overloaded", c.isOverloaded())
 }
 
-func (s *Server) readLoop(ctx context.Context, c *client) {
+func (s *Server) readLoop(ctx context.Context, c *client, log *slog.Logger) {
+	defer recoverPanic(log, "read_loop")
 	for {
+		if c.isOverloaded() {
+			log.Warn("outbox jammed, disconnecting", "event", "overload", "dropped", c.droppedCount())
+			return
+		}
 		line, err := c.readLine(s.cfg.IdleTimeout)
 		if err != nil {
 			s.reportReadError(ctx, c, err)
 			return
+		}
+		if !c.allow() {
+			rateLimitedTotal.Inc()
+			if !c.limited {
+				c.limited = true
+				c.trySend(errorEvent("rate limited"))
+				log.Warn("client rate limited", "event", "rate_limited")
+			}
+			continue
 		}
 		cmd, err := c.dec.Decode(line)
 		if err != nil {
@@ -137,12 +240,16 @@ func (s *Server) readLoop(ctx context.Context, c *client) {
 			}
 			continue
 		}
+		if n := utf8.RuneCountInString(cmd.Text); n > maxMessageRunes {
+			c.trySend(errorEvent(fmt.Sprintf("message is longer than %d characters", maxMessageRunes)))
+			continue
+		}
 		switch cmd.Name {
 		case "quit":
 			c.trySend(systemEvent("bye"))
 			return
 		case "help":
-			c.trySend(systemEvent(helpText))
+			c.trySend(systemEvent(protocol.HelpText()))
 		default:
 			c.trySendAll(s.hub.do(ctx, c, cmd))
 		}
@@ -154,9 +261,19 @@ func (s *Server) reportReadError(ctx context.Context, c *client, err error) {
 	switch {
 	case ctx.Err() != nil:
 
+	case c.isOverloaded():
+
 	case errors.As(err, &netErr) && netErr.Timeout():
 		c.trySend(systemEvent(fmt.Sprintf("disconnected: idle for %s", s.cfg.IdleTimeout)))
 	case errors.Is(err, protocol.ErrLineTooLong):
 		c.trySend(errorEvent("line too long, disconnecting"))
 	}
+}
+
+func remoteHost(conn net.Conn) string {
+	addr := conn.RemoteAddr().String()
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }

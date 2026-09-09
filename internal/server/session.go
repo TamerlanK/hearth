@@ -5,59 +5,62 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/TamerlanK/hearth/internal/protocol"
 )
 
-type sessionState int
-
-const (
-	negotiating sessionState = iota
-	naming
-	chatting
-)
-
 const greeting = "Welcome to hearth. Enter a name (1-20 characters, no spaces):"
 
-func (s *Server) handshake(ctx context.Context, c *client) error {
-	if err := c.writeEvent(systemEvent(greeting)); err != nil {
-		return err
-	}
-	for state := negotiating; state != chatting; {
-		line, err := c.readLine(s.cfg.IdleTimeout)
-		if err != nil {
-			return fmt.Errorf("handshake read: %w", err)
+func (s *Server) handshake(ctx context.Context, c *client, log *slog.Logger) (name string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic(log, "handshake", r)
+			name, err = "", errPanic
 		}
-		if state == negotiating {
-			state = naming
+	}()
+	if err := c.setReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return "", err
+	}
+	if err := c.writeEvent(systemEvent(greeting)); err != nil {
+		return "", err
+	}
+	for negotiated := false; ; negotiated = true {
+		line, err := c.readLine(0)
+		if err != nil {
+			return "", fmt.Errorf("handshake read: %w", err)
+		}
+		if !negotiated {
 			if bytes.Equal(bytes.TrimSuffix(line, []byte("\r")), []byte(protocol.Hello)) {
-				c.useJSON()
+				c.useJSON(s.cfg)
 				if err := c.writeEvent(systemEvent("protocol json")); err != nil {
-					return err
+					return "", err
 				}
 				continue
 			}
 		}
-		name, err := proposedName(c.dec, line)
+		candidate, err := proposedName(c.dec, line)
 		if err != nil {
 			if err := c.writeEvent(errorEvent(err.Error() + ", try again:")); err != nil {
-				return err
+				return "", err
 			}
 			continue
 		}
-		c.name = name
-		switch err := s.hub.join(ctx, c); {
+		switch err := s.hub.join(ctx, c, candidate); {
 		case err == nil:
-			state = chatting
+			if err := c.setReadDeadline(time.Time{}); err != nil {
+				return "", err
+			}
+			return candidate, nil
 		case errors.Is(err, errNameTaken):
 			if err := c.writeEvent(errorEvent("name taken, try another:")); err != nil {
-				return err
+				return "", err
 			}
 		default:
-			return fmt.Errorf("register %q: %w", name, err)
+			return "", fmt.Errorf("register %q: %w", candidate, err)
 		}
 	}
-	return nil
 }
 
 func proposedName(dec protocol.Decoder, line []byte) (string, error) {
