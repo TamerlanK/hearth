@@ -158,7 +158,7 @@ func TestWho(t *testing.T) {
 	expectLine(t, bob, "* bob joined", wait)
 
 	send(t, alice, "/who")
-	expectLine(t, alice, "* online (2): alice, bob", wait)
+	expectLine(t, alice, "* online in #general (2): alice, bob", wait)
 }
 
 func TestMaxClients(t *testing.T) {
@@ -225,7 +225,7 @@ func TestUnknownCommand(t *testing.T) {
 	addr, _, _ := startServer(t, Config{})
 	alice := dial(t, addr, "alice")
 	send(t, alice, "/dance now")
-	expectLine(t, alice, "! unknown command /dance", wait)
+	expectLine(t, alice, "! unknown command dance (try /help)", wait)
 }
 
 func TestValidateName(t *testing.T) {
@@ -256,11 +256,11 @@ func TestValidateName(t *testing.T) {
 func TestTrySendDropsWhenFull(t *testing.T) {
 	c := newClient(nil)
 	for i := range sendBuffer {
-		if !c.trySend("x") {
+		if !c.trySend(systemEvent("x")) {
 			t.Fatalf("send %d unexpectedly dropped", i)
 		}
 	}
-	if c.trySend("overflow") {
+	if c.trySend(systemEvent("overflow")) {
 		t.Error("send into full buffer should be dropped")
 	}
 	if got := c.droppedCount(); got != 1 {
@@ -268,7 +268,7 @@ func TestTrySendDropsWhenFull(t *testing.T) {
 	}
 	c.closeSend()
 	c.closeSend()
-	if c.trySend("after close") {
+	if c.trySend(systemEvent("after close")) {
 		t.Error("send after close should be dropped")
 	}
 }

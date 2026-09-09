@@ -7,25 +7,31 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/TamerlanK/hearth/internal/protocol"
 )
 
 const (
 	maxNameLen   = 20
-	maxLineBytes = 4096
+	maxRoomLen   = 24
 	sendBuffer   = 32
 	writeTimeout = 5 * time.Second
+	defaultRoom  = "#general"
 )
-
-var errLineTooLong = errors.New("line too long")
 
 type client struct {
 	conn net.Conn
 	sc   *bufio.Scanner
+	send chan protocol.Event
+
+	enc protocol.Encoder
+	dec protocol.Decoder
+	seq uint64
+
 	name string
-	send chan string
+	room string
 
 	mu      sync.Mutex
 	closed  bool
@@ -33,23 +39,43 @@ type client struct {
 }
 
 func newClient(conn net.Conn) *client {
-	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, maxLineBytes), maxLineBytes)
-	return &client{conn: conn, sc: sc, send: make(chan string, sendBuffer)}
+	c := &client{
+		conn: conn,
+		send: make(chan protocol.Event, sendBuffer),
+		enc:  protocol.TextCodec{},
+		dec:  protocol.TextCodec{},
+		room: defaultRoom,
+	}
+	if conn != nil {
+		c.sc = bufio.NewScanner(conn)
+		c.sc.Buffer(make([]byte, protocol.MaxLineBytes), protocol.MaxLineBytes)
+	}
+	return c
 }
 
-func (c *client) trySend(msg string) bool {
+func (c *client) useJSON() {
+	c.enc = protocol.JSONCodec{}
+	c.dec = protocol.JSONCodec{}
+}
+
+func (c *client) trySend(e protocol.Event) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return false
 	}
 	select {
-	case c.send <- msg:
+	case c.send <- e:
 		return true
 	default:
 		c.dropped++
 		return false
+	}
+}
+
+func (c *client) trySendAll(events []protocol.Event) {
+	for _, e := range events {
+		c.trySend(e)
 	}
 }
 
@@ -68,24 +94,23 @@ func (c *client) droppedCount() int {
 	return c.dropped
 }
 
-func (c *client) readLine(idle time.Duration) (string, error) {
+func (c *client) readLine(idle time.Duration) ([]byte, error) {
 	if idle > 0 {
 		if err := c.conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
-			return "", fmt.Errorf("set read deadline: %w", err)
+			return nil, fmt.Errorf("set read deadline: %w", err)
 		}
 	}
 	if !c.sc.Scan() {
-		err := c.sc.Err()
-		switch {
+		switch err := c.sc.Err(); {
 		case err == nil:
-			return "", io.EOF
+			return nil, io.EOF
 		case errors.Is(err, bufio.ErrTooLong):
-			return "", errLineTooLong
+			return nil, protocol.ErrLineTooLong
 		default:
-			return "", fmt.Errorf("read: %w", err)
+			return nil, fmt.Errorf("read: %w", err)
 		}
 	}
-	return strings.TrimSuffix(c.sc.Text(), "\r"), nil
+	return c.sc.Bytes(), nil
 }
 
 func (c *client) interruptRead(log *slog.Logger) {
@@ -94,28 +119,26 @@ func (c *client) interruptRead(log *slog.Logger) {
 	}
 }
 
-func (c *client) writeLine(line string) error {
-	return writeLine(c.conn, line)
+func (c *client) writeEvent(e protocol.Event) error {
+	c.seq++
+	e.Seq = c.seq
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+	if err := c.enc.Encode(c.conn, e); err != nil {
+		return fmt.Errorf("encode %s event: %w", e.Kind, err)
+	}
+	return nil
 }
 
 func (c *client) writeLoop(log *slog.Logger) {
 	defer closeConn(c.conn, log)
-	for msg := range c.send {
-		if err := c.writeLine(msg); err != nil {
+	for e := range c.send {
+		if err := c.writeEvent(e); err != nil {
 			log.Debug("write", "err", err)
 			return
 		}
 	}
-}
-
-func writeLine(conn net.Conn, line string) error {
-	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-		return fmt.Errorf("set write deadline: %w", err)
-	}
-	if _, err := io.WriteString(conn, line+"\n"); err != nil {
-		return fmt.Errorf("write: %w", err)
-	}
-	return nil
 }
 
 func closeConn(conn net.Conn, log *slog.Logger) {
