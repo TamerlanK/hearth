@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TamerlanK/hearth/internal/protocol"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
 const wait = 2 * time.Second

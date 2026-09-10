@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/TamerlanK/hearth/internal/protocol"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
 var (

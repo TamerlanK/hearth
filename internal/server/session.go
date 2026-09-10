@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/TamerlanK/hearth/internal/protocol"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
 const greeting = "Welcome to hearth. Enter a name (1-20 characters, no spaces):"

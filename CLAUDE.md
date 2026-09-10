@@ -19,11 +19,11 @@ unless the user says otherwise in the current session.
 cmd/hearth/        thin entrypoint, no logic
 internal/cli/      cobra commands
 internal/server/   accept loop, hub, connection handling
-internal/protocol/ wire format: framing, message types, negotiation
 internal/ratelimit/ token bucket, one per connection
 internal/ring/     generic fixed-capacity ring buffer
 internal/tui/      terminal UI
 pkg/client/        public Go client library
+pkg/protocol/      wire format: framing, message types, negotiation
 docs/              ARCHITECTURE.md, PROTOCOL.md
 DECISIONS.md       running log of non-obvious choices and why
 ```

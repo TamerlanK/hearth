@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TamerlanK/hearth/internal/protocol"
 	"github.com/TamerlanK/hearth/internal/ratelimit"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
 const (

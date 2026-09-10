@@ -109,7 +109,7 @@ Next to `CLAUDE.md` so it is found on first open rather than buried in `docs/`.
 ## 2026-09-09 — Wire protocol
 
 ### D20. One `Event` type for both encodings, codecs own all formatting
-`internal/protocol` defines `Event`/`Command` and two codecs behind
+`pkg/protocol` defines `Event`/`Command` and two codecs behind
 `Encoder`/`Decoder`. The hub builds `protocol.Event` values and never formats a
 string; each client holds the codec it negotiated, so the same broadcast reaches
 a telnet user as `[15:04] alice: hi` and a JSON user as one object. Adding a
@@ -136,7 +136,7 @@ global sequence would leak fan-out order and make gaps normal. Consequence:
 `seq` detects reordering, not loss — clients cannot use it to request a resend.
 
 ### D24. Unknown commands are rejected by the codec, not the server
-The command vocabulary lives in one table in `internal/protocol`, so both
+The command vocabulary lives in one table in `pkg/protocol`, so both
 codecs accept exactly the same set. `Decode` returns `ErrUnknownCommand` with
 the parsed name still in `Command.Name` so the server can name it in the error
 event. Consequence: the telnet error lost its slash — `! unknown command dance
@@ -190,7 +190,7 @@ message with exactly the code that renders a live one. The cost is bounded by
 `HistorySize`, which is also what bounds the memory.
 
 ### D30. `/help` and usage errors are generated from the codec's command table
-The vocabulary already lived in one table in `internal/protocol` (D24), so the
+The vocabulary already lived in one table in `pkg/protocol` (D24), so the
 usage strings moved there too and `HelpText()` joins them. `/help`, `usage:`
 errors and the set of names `Decode` accepts now cannot disagree, because adding
 a row to `Commands` is the only way to add a command. Previously `/help` was a
@@ -281,3 +281,15 @@ tab cannot break the one-event-one-line invariant the way `\n` or `\r` can, and
 stripping it mangles pasted code, so it is passed through explicitly. Everything
 else non-printable — including the escape byte that starts a terminal control
 sequence — still goes.
+
+## 2026-09-10 — Protocol goes public
+
+### D42. The whole protocol package moved to `pkg/protocol`
+A public client has to name `Event` in its API, and Go forbids importers
+outside the module from touching `internal/`. Splitting the package (types
+public, codecs internal) would have put `Event` and the code that renders it in
+two places for no gain: the codecs, the command table and `HelpText` are all
+things a client legitimately wants. So the directory moved as one and the
+server imports it from its new path. The two client-side halves the server
+never needed, `EncodeCommand` and `DecodeEvent`, were added there rather than in
+the client so the wire format stays in one package.

@@ -14,8 +14,8 @@ test:
 	go test -race -count=1 ./...
 
 fuzz:
-	go test ./internal/protocol -run '^$$' -fuzz FuzzJSONDecode -fuzztime 10s
-	go test ./internal/protocol -run '^$$' -fuzz FuzzTextDecode -fuzztime 10s
+	go test ./pkg/protocol -run '^$$' -fuzz FuzzJSONDecode -fuzztime 10s
+	go test ./pkg/protocol -run '^$$' -fuzz FuzzTextDecode -fuzztime 10s
 
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \

@@ -7,7 +7,7 @@
 - Each client gets two goroutines: a reader that parses lines from the socket and a writer that drains an outbound channel.
 - All communication between the hub and clients is by channel, so there are no locks on chat state.
 - Outbound channels are buffered (32 events). Fan-out is non-blocking: a client that cannot keep up has messages dropped and counted, and the 5s write deadline eventually disconnects one that is truly stuck.
-- `internal/protocol` owns the wire format: `Event`, `Command`, the `Encoder`/`Decoder` interfaces and the two codecs. The server passes `protocol.Event` values around and never formats a string for the wire; rendering happens inside the codec a client owns.
+- `pkg/protocol` owns the wire format: `Event`, `Command`, the `Encoder`/`Decoder` interfaces and the two codecs. The server passes `protocol.Event` values around and never formats a string for the wire; rendering happens inside the codec a client owns.
 - Each connection negotiates its encoding once (text or JSON lines) and keeps it. `internal/server/session.go` runs the handshake: the first line is inspected for `HELLO`, then every line is a name attempt until the hub accepts one, and the accepted name is returned to the caller.
 - Shutdown is context-driven: cancelling the server context stops the accept loop, then the hub, then the connections.
 - The terminal client will be a thin TUI over `pkg/client`, the public library that handles dialing, negotiation and delivery.

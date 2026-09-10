@@ -10,8 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/TamerlanK/hearth/internal/protocol"
 	"github.com/TamerlanK/hearth/internal/ring"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
 var errNameTaken = errors.New("name already taken")
