@@ -483,6 +483,20 @@ operator-only, so the profile handlers register on the same mux. Consequence:
 `SECURITY.md` says to keep on a private interface. Revisit if the metrics port
 ever becomes something a load balancer scrapes across a network boundary.
 
+### D66. The load tool measures per-client rate, spreads rooms, and paces connects
+`cmd/hearth-load` takes `--rate` as messages per second *per client*, because
+that is how a chat load actually scales, and `--rooms` because a single room of
+N clients turns every message into N deliveries, which at N=5000 is a different
+experiment from "5000 users". Connections are paced by `--connect-rate` (200/s)
+because every join is broadcast to the whole room and an unpaced storm into a
+big room overflows outboxes before the measurement starts; the first version
+without pacing disconnected 90% of a thousand clients while connecting.
+Latency is measured end to end by embedding `time.Now().UnixNano()` in the
+message text and reading it back at every receiver; both processes are on one
+clock. Server CPU, RSS and drops come from the metrics endpoint rather than
+`/proc` so the tool works against a remote server too. The tool is a separate
+`main` under `cmd/` so the release binary never carries it.
+
 ### D67. A cancelled `Send` interrupts only the write, and clears its deadline
 The load tool found that `Client.write` interrupted a cancelled context with
 `SetDeadline(now)`, which also failed the reader goroutine's next read and tore

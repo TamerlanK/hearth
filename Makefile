@@ -5,13 +5,19 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
-.PHONY: build test fuzz lint fmt vet check release-dry docker run-server run-client clean
+.PHONY: build build-load test bench fuzz lint fmt vet check release-dry docker run-server run-client clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/hearth
 
+build-load:
+	go build -o bin/hearth-load ./cmd/hearth-load
+
 test:
 	go test -race -count=1 ./...
+
+bench:
+	go test -run '^$$' -bench . -benchmem ./...
 
 fuzz:
 	go test ./pkg/protocol -run '^$$' -fuzz FuzzJSONDecode -fuzztime 10s
