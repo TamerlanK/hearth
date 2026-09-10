@@ -236,7 +236,7 @@ and may try again.
 | Unparseable line (bad JSON, invalid UTF-8) | `malformed line` | stays open |
 | Command name not in the table above | `unknown command dance (try /help)` | stays open |
 | Wrong argument count | `usage: /msg <name> <text>` (from the command table, so it always matches `/help`) | stays open |
-| Name rejected while naming | `name is empty, try again:`, `name must be printable with no spaces, try again:` | stays open |
+| Name rejected while naming | `name is empty, try again:`, `name is longer than 20 characters, try again:`, `name must be printable with no spaces, try again:`, `expected a name, try again:` (a JSON command other than `nick` or `say` while naming) | stays open |
 | Name already in use | `name taken, try another:` (naming) / `name taken` (`nick`) | stays open |
 | Unknown recipient for `msg` | `no such user bob` | stays open |
 | Bad room name | `room name must be 1-24 characters of a-z, 0-9 or -` | stays open |
@@ -329,3 +329,19 @@ for raw in f:                                  # every line from here is JSON
 Checklist for a robust client: read lines continuously; ignore unknown `kind`
 values and unknown fields; keep lines under 4096 bytes; expect `error` events
 without assuming disconnection; treat delivery as best-effort.
+
+## Version history
+
+The version string is `hearth/1` and has not changed. Within it the protocol
+has only grown, which the compatibility rules above allow:
+
+| Date | Change | Compatibility |
+|------|--------|---------------|
+| 2026-09-09 | First version: text framing, the name prompt, `say`, `msg`, `who`, `quit`, `help`; events `msg`, `privmsg`, `system`, `join`, `leave`, `who`, `error`. | — |
+| 2026-09-09 | JSON encoding behind `HELLO hearth/1 json`; per-connection `seq`; `ping`/`pong`; typed errors `malformed line`, `unknown command`. | additive |
+| 2026-09-09 | Rooms (`join`, `rooms`), history replay (`history`), renaming (`nick`), room-scoped events, the `too many rooms` and `already in` errors. | additive |
+| 2026-09-09 | Limits on the wire: 4096-byte lines, 1024-rune messages, rate limiting with the once-per-flood `rate limited` error, per-address cap, the 10 s handshake deadline, disconnect after consecutive drops. | additive |
+| 2026-09-10 | No wire change. `pkg/client` and the terminal UI shipped as JSON clients of this version. | — |
+
+A breaking change would become `hearth/2` with a new `HELLO` line, and the
+server would keep accepting `hearth/1` for at least one release.

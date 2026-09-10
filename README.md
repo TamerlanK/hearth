@@ -6,88 +6,108 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/TamerlanK/hearth.svg)](https://pkg.go.dev/github.com/TamerlanK/hearth)
 [![License: MIT](https://img.shields.io/github/license/TamerlanK/hearth)](LICENSE)
 
-Hearth is a TCP chat server and terminal client shipped as a single binary. It
-speaks a small line-oriented protocol, keeps room state in one place, and gives
-you a terminal UI for joining a room without installing anything else.
+Hearth is a TCP chat server and terminal client in one static binary, written
+in Go with the standard library and five dependencies. One goroutine
+owns all chat state and talks to every connection over channels, so there is
+no lock on the hot path and nothing for `-race` to find; a client that stops
+reading loses its own messages and nobody else's. It speaks a line protocol
+that works from `telnet` and, after one `HELLO` line, as JSON. On a laptop it
+delivers half a million messages a second to 5000 clients with a p99 of 35 ms,
+and the profile that says where the rest of the time goes is in the repo.
 
-**Status: in development.** The server, the terminal UI and the Go client
-library work.
+![demo: two clients side by side, joining a room, sending a DM, opening help](demo/demo.gif)
 
-## Install
+## Features
 
-With Go:
-
-```sh
-go install github.com/TamerlanK/hearth/cmd/hearth@latest
-```
-
-From a [release](https://github.com/TamerlanK/hearth/releases/latest): download
-the archive for your OS and architecture, verify it against `checksums.txt`,
-unpack, and put `hearth` on your PATH.
-
-With Docker (the image only makes sense for the server; the client wants your
-terminal):
-
-```sh
-docker run --rm -p 4000:4000 -p 9090:9090 ghcr.io/tamerlank/hearth:latest
-```
-
-Or from a clone: `make build` puts the binary in `bin/hearth`.
+- **Rooms, history, DMs, renaming.** `/join` creates a room on first use and
+  collects it when empty; the last 50 messages are replayed to you when you
+  arrive; `/msg` reaches only the two of you; `/nick` tells your room.
+- **Two encodings, one semantics.** Type into `telnet`, or send
+  `HELLO hearth/1 json` first and get one JSON object per line.
+- **No head-of-line blocking.** Fan-out never blocks the hub. A slow client's
+  outbox fills, its events are dropped and counted, and it is disconnected
+  after 100 drops in a row.
+- **Hardened by default.** Per-client rate limit checked before decoding, a
+  per-address connection cap, line and message caps, handshake and idle
+  timeouts, control characters stripped, panics contained to one connection.
+- **A terminal UI** with rooms and members, unread badges, command history,
+  a help overlay and automatic reconnect; `--plain` for scripts and pipes.
+- **A Go client library**, `pkg/client`, with request correlation, a bounded
+  event channel and jittered reconnect.
+- **Operable.** Structured logs, Prometheus metrics, `/healthz`, pprof,
+  graceful shutdown with a 5 s drain, a 12 MB distroless image.
+- **Measured.** Micro-benchmarks, a load generator, and honest numbers in
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quickstart
 
 ```sh
-hearth serve                                                # listens on :4000
-hearth connect localhost:4000 --name alice                  # in another terminal
+go install github.com/TamerlanK/hearth/cmd/hearth@latest
+
+hearth serve                                   # terminal 1: listens on :4000
+hearth connect localhost:4000 --name alice     # terminal 2
+hearth connect localhost:4000 --name bob       # terminal 3
 ```
 
-### Try it in 30 seconds
+Type to talk. `/join golang` moves rooms, `/msg bob hi` is private, `?` opens
+help, Ctrl+C leaves. `telnet localhost 4000` works too.
 
-Terminal 1:
+## Install
+
+| How | Command |
+|-----|---------|
+| Go 1.24+ | `go install github.com/TamerlanK/hearth/cmd/hearth@latest` |
+| Release archive | download from [releases](https://github.com/TamerlanK/hearth/releases/latest), verify against `checksums.txt`, put `hearth` on your PATH |
+| Docker (server only) | `docker run --rm -p 4000:4000 -p 9090:9090 ghcr.io/tamerlank/hearth:latest` |
+| From source | `git clone https://github.com/TamerlanK/hearth && cd hearth && make build` → `bin/hearth` |
+
+Linux, macOS and Windows on amd64 and arm64 are built and tested in CI.
+
+## Usage
+
+### serve
 
 ```sh
-hearth serve --addr :4000
+hearth serve --addr :4000 --metrics-addr 127.0.0.1:9090 --log-format json
 ```
 
-Terminal 2 (and 3, with another name):
+| Flag | Default | What it does |
+|------|---------|--------------|
+| `--addr` | `:4000` | Chat listener address |
+| `--metrics-addr` | *(off)* | Serve `/metrics`, `/healthz` and `/debug/pprof/` here |
+| `--log-format`, `--log-level` | `text`, `info` | `text` or `json`; `debug` … `error` |
+| `--max-clients`, `--max-per-ip` | `100`, `10` | Concurrent connections, total and per address (0 = unlimited) |
+| `--idle-timeout` | `5m` | Disconnect clients silent this long (0 = never) |
+| `--history`, `--default-room`, `--max-rooms` | `50`, `general`, `64` | Messages kept per room; where everyone starts; rooms that may exist |
+| `--rate`, `--burst` | `5`, `10` | Sustained lines per second per client, and the burst above it |
+| `--max-drops` | `100` | Consecutive dropped events before a client is disconnected |
+
+Every flag reads `HEARTH_<FLAG>` from the environment when not given on the
+command line; `hearth serve --help` names the variable next to each flag.
+Ctrl+C or SIGTERM tells every client the server is going away and waits up to
+5 s for connections to drain.
+
+### connect
 
 ```sh
-hearth connect localhost:4000 --name alice
+hearth connect host:4000 --name alice [--room ops] [--plain]
 ```
 
-`hearth connect` opens the terminal UI: rooms and members on the left, the
-transcript on the right, a prompt at the bottom and a status bar under it.
+Opens the terminal UI: rooms and members on the left, the transcript on the
+right, a prompt at the bottom, a status bar under it. It needs 80x24 to look
+as drawn, drops the sidebar under 60 columns, follows the terminal's light or
+dark background, honours `NO_COLOR`, and reconnects on its own if the server
+goes away.
 
-<!-- screenshot: docs/screenshot.png — two terminals, #golang with an unread
-     badge on #general. Not committed yet. -->
+`--plain` is a stdin/stdout line client with no UI and no reconnect, for
+scripts:
 
-```
-┌ sidebar ───────────┬ messages ───────────────────────────┐
-│ Rooms              │ [15:04] alice        hello everyone │
-│  #general (3) •2   │ [15:04] bob          hey            │
-│ >#golang  (1)      │ [15:04]            * carol joined   │
-│                    │                                     │
-│ Users in #golang   ├─────────────────────────────────────┤
-│  you               │ > type a message or /command_       │
-│  carol             │                                     │
-├────────────────────┴─────────────────────────────────────┤
-│ connected to host:4000 as alice · #golang · ?: help      │
-└──────────────────────────────────────────────────────────┘
+```sh
+echo "deploy finished" | hearth connect localhost:4000 --plain --name ci --room ops
 ```
 
-Type a line to send it to the room. `/who` lists users, `/join <room>` moves
-rooms, `/msg <name> <text>` is private, `/quit` leaves, `?` or `F1` opens the
-help overlay. Ctrl+C in either terminal exits cleanly; the server waits up to 5s
-for clients to drain.
-
-The UI needs at least 80x24 to look as drawn. Below 60 columns the sidebar goes
-away and the transcript takes the full width; below 24x6 it says so rather than
-drawing a broken frame. Colours follow the terminal's light or dark background
-and are dropped entirely when `NO_COLOR` is set.
-
-Unlike `--plain`, the UI reconnects on its own when the server goes away: the
-status bar turns into `reconnecting to host:4000… (attempt N)` and sending is
-refused with an inline error rather than hanging.
+`hearth version --json` prints build info; `hearth completion <shell>` prints
+a completion script.
 
 ### Keybindings
 
@@ -96,216 +116,149 @@ refused with an inline error rather than hanging.
 | `Enter` | Send the line, or join the highlighted room when the rooms pane has focus |
 | `Tab` / `Shift+Tab` | Cycle focus: input → messages → rooms |
 | `Ctrl+N` / `Ctrl+P` | Join the next / previous room |
-| `Up` / `Down` | Command history in the input, scroll in the messages pane, pick a room in the rooms pane |
+| `Up` / `Down` | Command history in the input; scroll the transcript; pick a room |
 | `PgUp` / `PgDn` | Scroll the transcript |
 | `Ctrl+L` | Clear the current room's transcript |
-| `?` | Toggle the help overlay (outside the input) |
-| `F1` | Toggle the help overlay |
+| `?` / `F1` | Toggle the help overlay (`?` outside the input) |
 | `Esc` | Close the help overlay |
 | `Ctrl+C` | Close the client and quit |
 
-Scrolling up locks the view; a `↓ new messages` pill appears above the prompt
-until you scroll back to the bottom. Rooms you are not looking at carry a `•N`
-unread badge.
+Commands: `/say`, `/msg <name> <text>`, `/join <room>`, `/nick <name>`,
+`/who [room]`, `/rooms`, `/history [room]`, `/ping`, `/quit`, `/help`. A bare
+line is `/say`.
 
-`--plain` runs a minimal stdin/stdout client instead of the terminal UI, which
-makes scripting easy (and is required when stdout is not a terminal):
+## Architecture
 
-```sh
-echo "deploy finished" | hearth connect localhost:4000 --plain --name ci --room ops
+One goroutine, the hub, owns every room, name and history entry. Each
+connection gets a reader goroutine that parses lines and a writer goroutine
+that drains a 32-event outbox. All traffic between them is channels; the hub
+never blocks on a client and a client never blocks on a dead hub.
+
+```mermaid
+flowchart LR
+    L[accept loop] -->|net.Conn| R1[reader: handshake, rate limit, decode]
+    L -->|net.Conn| R2[reader …]
+    R1 -->|register / leave / request<br/>+ reply channel| H[(hub goroutine<br/>rooms · names · history)]
+    R2 --> H
+    H -->|trySend, never blocks| O1[outbox 32]
+    H -->|trySend| O2[outbox 32]
+    O1 --> W1[writer: encode, write, seq]
+    O2 --> W2[writer …]
+    W1 --> S1((socket))
+    W2 --> S2((socket))
 ```
 
-Every flag has an environment variable named after it, `HEARTH_` plus the flag
-name in upper case with dashes as underscores. Flags win over the environment,
-and the environment wins over the default:
+Shutdown is context-driven and the unwind is the same whether the client or
+the server starts it: **read loop ends → unregister → hub closes the outbox →
+writer drains and closes the socket.**
 
-```sh
-HEARTH_ADDR=:5000 HEARTH_LOG_FORMAT=json hearth serve
+```mermaid
+sequenceDiagram
+    participant S as Serve
+    participant L as listener
+    participant H as hub
+    participant R as reader
+    participant W as writer
+    S->>L: ctx cancelled: Close()
+    S->>H: ctx.Done()
+    H->>W: queue "server shutting down", close(outbox)
+    S->>R: SetReadDeadline(now)
+    R-->>S: returns
+    W->>W: drain outbox, conn.Close()
+    S->>S: WaitGroup done, return nil
 ```
 
-`hearth version --json` prints the build info as JSON, and `hearth completion
-bash|zsh|fish|powershell` prints a shell completion script.
+Why a single hub, why channels, why drop instead of block, why one magic
+line for negotiation, and what the trade-offs are, with a goroutine model and
+ownership table: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The running log
+of non-obvious choices is [DECISIONS.md](DECISIONS.md).
 
-From Go, import `pkg/client` and chat in a dozen lines; see
+## Protocol
+
+`hearth/1` is line-delimited UTF-8, at most 4096 bytes per line. The server
+sends one text prompt; the client's first line is either its name (text mode,
+what telnet does) or `HELLO hearth/1 json`, after which every line in both
+directions is one JSON object:
+
+```json
+{"cmd":"say","text":"hello everyone"}
+{"kind":"msg","room":"#general","from":"alice","text":"hello everyone","time":"2026-09-09T15:04:05.123Z","seq":7}
+```
+
+Ten commands, eleven event kinds, a per-connection `seq`, documented error
+texts, flow control and compatibility rules, and a working Python client:
+[docs/PROTOCOL.md](docs/PROTOCOL.md). The Go client library is documented in
 [docs/CLIENT.md](docs/CLIENT.md).
-
-`telnet localhost 4000` still works: enter a name when prompted, then type.
-Programs should speak the JSON encoding instead: send `HELLO hearth/1 json` as
-the first line and every line in both directions becomes one JSON object. See
-[docs/PROTOCOL.md](docs/PROTOCOL.md), which has a working Python client.
-
-## Features
-
-- **Rooms.** Everyone starts in `#general`. `/join <room>` creates a room on
-  first use and moves you into it; a room disappears when its last member
-  leaves. Room names are 1–24 characters of `a-z`, `0-9` and `-`.
-- **History.** The last 50 messages of a room are replayed to you alone when you
-  join it, so you arrive mid-conversation rather than blind. The depth, the
-  default room and a cap on the number of rooms are `server.Config` fields.
-- **Private messages.** `/msg <name> <text>` reaches the two of you and nobody
-  else, whatever rooms you are in.
-- **Renaming.** `/nick <name>` takes the same rules as the connect prompt and
-  tells your room about it.
-- **Two encodings, one semantics.** Type into `telnet`, or send
-  `HELLO hearth/1 json` and get one JSON object per line instead.
-- **No head-of-line blocking.** A client that stops reading has its own events
-  dropped and is disconnected; nobody else waits for it.
-- **Hardened by default.** Per-client rate limiting, a per-address connection
-  cap, a message length cap, handshake and idle timeouts, and panic recovery
-  that closes one connection rather than the process.
-
-`/help` prints the whole command list, generated from the same table the parser
-uses:
-
-```
-* commands: /say <text>, /msg <name> <text>, /join <room>, /nick <name>, /who [room], /rooms, /history [room], /ping, /quit, /help (a bare line is /say)
-```
 
 ## Operations
 
 ```sh
-hearth serve --addr :4000 --metrics-addr :9090 --log-format json --log-level info
-```
-
-Or the whole thing with Prometheus already scraping it:
-
-```sh
+hearth serve --addr :4000 --metrics-addr 127.0.0.1:9090 --log-format json --log-level info
 docker compose up        # chat on :4000, Prometheus UI on http://localhost:9090
 ```
 
-The compose file builds the server image (12 MB, distroless, non-root) and
-starts Prometheus with [prometheus.yml](prometheus.yml) pointed at it; query
-any `hearth_*` metric from the table below at `http://localhost:9090`.
+- **Logs** are `log/slog` with a stable key set: `event`, `client_id`,
+  `remote_addr`, `name`, `room`. Follow `client_id` to trace one connection.
+- **Metrics** on `/metrics`: `hearth_connections_current`,
+  `hearth_connections_total`, `hearth_messages_total{kind}`,
+  `hearth_dropped_messages_total`, `hearth_rate_limited_total`,
+  `hearth_rooms_current`, `hearth_message_fanout_seconds`, plus the Go and
+  process collectors. `/healthz` answers `ok`.
+- **Profiles** on `/debug/pprof/` on the same port. Keep `--metrics-addr` on a
+  private interface: it is unauthenticated.
+- **Shutdown**: SIGINT/SIGTERM, every client gets `* server shutting down`,
+  5 s drain, exit 1 if it times out.
+- **Security**: no auth, no TLS yet. Read [SECURITY.md](SECURITY.md) before
+  exposing it.
 
-On start the server logs one banner with the resolved configuration. The
-configuration is rendered through `Config.LogValue`, an explicit allowlist of
-fields, so a value that is not named there can never reach the log — that is
-where future secrets (TLS key paths, tokens) stay out.
+## Benchmarks
 
-### Flags
+Measured on a 10-core laptop with the load generator on the same machine
+(details, commands and profile in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
 
-Each flag reads `HEARTH_<FLAG>` from the environment when it is not given on
-the command line; `hearth serve --help` names the variable next to each flag.
+| clients | rooms | deliveries/s | delivered | p50 | p99 | server CPU | RSS |
+|--------:|------:|-------------:|----------:|----:|----:|-----------:|----:|
+| 100 | 1 | 10 000 | 100% | 0.30 ms | 0.64 ms | 9% | 24 MB |
+| 1000 | 10 | 100 000 | 100% | 0.30 ms | 0.78 ms | 91% | 65 MB |
+| 5000 | 50 | 500 000 | 100% | 3.3 ms | 35 ms | 689% | 246 MB |
 
-| Flag | Default | What it does |
-|------|---------|--------------|
-| `--addr` | `:4000` | Chat listener address |
-| `--metrics-addr` | *(empty)* | Serve `/metrics` and `/healthz` here; empty turns it off |
-| `--log-format` | `text` | `text` or `json` |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
-| `--max-clients` | `100` | Concurrent connections (0 = unlimited) |
-| `--max-per-ip` | `10` | Concurrent connections from one address (0 = unlimited) |
-| `--idle-timeout` | `5m` | Disconnect clients silent this long (0 = never) |
-| `--history` | `50` | Messages kept per room and replayed when joining it |
-| `--default-room` | `general` | Room every client starts in |
-| `--max-rooms` | `64` | Rooms that may exist at once (0 = unlimited) |
-| `--rate` | `5` | Sustained lines per second per client (0 = unlimited) |
-| `--burst` | `10` | Lines a client may send back to back before `--rate` applies |
-| `--max-drops` | `100` | Consecutive dropped events before a client is disconnected (0 = never) |
-
-Two limits are not flags because they are protocol constants: the 4096-byte line
-cap and the 1024-rune message cap (`docs/PROTOCOL.md`), and the 10s deadline for
-completing the handshake.
-
-`server.Config`'s zero value applies **no** limits, matching the existing
-meaning of `MaxClients: 0`. The defaults above live in the flags, so a program
-embedding `server.New` opts into each limit deliberately. The one field that is
-normalised rather than taken literally is `Burst`: a rate with a zero burst
-would let nobody send anything, so it becomes 1.
-
-### Logging
-
-Every line is `log/slog` with a stable key set: `event` (a machine-readable
-slug), `client_id` (a short random per-connection id), `remote_addr`, and, once
-a client is named, `name` and `room`. `name` and `room` are join-time snapshots
-— see the name-ownership note in the architecture doc — so follow `client_id`,
-not `name`, when tracing one connection.
-
-```sh
-hearth serve --log-format json --log-level debug 2>&1 | jq 'select(.event=="rate_limited")'
-```
-
-### Metrics
-
-`--metrics-addr` serves Prometheus text on `/metrics` and a plain `ok` on
-`/healthz`. Alongside the usual `go_*` and `process_*` collectors:
-
-| Metric | Type | Meaning |
-|--------|------|---------|
-| `hearth_connections_current` | gauge | Connections open now |
-| `hearth_connections_total` | counter | Connections admitted since start |
-| `hearth_messages_total{kind}` | counter | Events produced by the hub, once each, not per recipient |
-| `hearth_dropped_messages_total` | counter | Events dropped because an outbox was full |
-| `hearth_rate_limited_total` | counter | Lines rejected by a rate limiter |
-| `hearth_rooms_current` | gauge | Rooms that exist now |
-| `hearth_message_fanout_seconds` | histogram | Time for the hub to hand one message to every outbox |
-
-`hearth_rate_limited_total` climbing fast is normal under a flood: a client
-spraying lines is counted once per rejected line, so a `yes | nc` flood adds
-millions per minute while `hearth_messages_total{kind="msg"}` rises at
-`--rate`. Watch the gap between the two rather than either alone.
-
-## Architecture
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Protocol
-
-See [docs/PROTOCOL.md](docs/PROTOCOL.md).
-
-## Client library
-
-See [docs/CLIENT.md](docs/CLIENT.md).
+The hub hands a message to 1000 outboxes in 35 µs with zero allocations. The
+ceiling is the write path: 88% of CPU under load is per-client writers, 55%
+of it in `write(2)` because every event to every recipient is one syscall.
+Batching writes and encoding once per broadcast are the next changes, and the
+benchmarks doc says why they are not done yet.
 
 ## Development
 
-Requires Go 1.24+.
-
 ```sh
-make check         # fmt, vet, lint, test -race — the gate for every change
-make fuzz          # fuzz both protocol decoders, 10s each
-make build         # -> bin/hearth
-make docker        # build the container image as hearth:<version>
-make release-dry   # goreleaser snapshot: all six platforms into dist/, no publishing
+make check         # fmt, vet, lint, test -race: the gate for every change
+make bench         # micro-benchmarks
+make fuzz          # fuzz both protocol decoders, 10 s each
+make build-load    # bin/hearth-load, the load generator
+make demo          # re-record demo/demo.gif (needs vhs v0.10.0, ttyd, ffmpeg, tmux)
+make release-dry   # goreleaser snapshot into dist/
 ```
 
-`make lint` needs `golangci-lint` on your PATH and is skipped with a notice when
-it is missing; `make release-dry` needs `goreleaser`:
+`make lint` needs `golangci-lint`; `make demo` needs
+`go install github.com/charmbracelet/vhs@v0.10.0` (v0.12.0 writes no output).
+CI runs lint, the race test matrix on three OSes and two Go versions, a fuzz
+smoke, cross-compilation, `govulncheck` and a Docker build. Releases are
+tag-driven: `git tag v0.1.0 && git push origin v0.1.0` builds six platforms
+and pushes the image. Conventions for contributors are in
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md); the changelog
+is [CHANGELOG.md](CHANGELOG.md).
 
-```sh
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-go install golang.org/x/tools/cmd/goimports@latest
-go install github.com/goreleaser/goreleaser/v2@latest
-```
+## Roadmap
 
-Longer fuzzing runs go through `go test` directly, e.g.:
+1. Batch writes and encode once per broadcast (the profile says two thirds of
+   server CPU).
+2. TLS on the listener and a shared-secret token inside the `HELLO` line.
+3. Coalesce join notices in large rooms and index names, so connect storms
+   are linear.
+4. Request ids in `hearth/2` so the client can run concurrent requests.
+5. Append-only history persistence per room.
+6. Live room-list updates and multi-room membership in the UI.
 
-```sh
-go test ./pkg/protocol -run '^$' -fuzz FuzzJSONDecode -fuzztime 10m
-```
+## License
 
-CI (`.github/workflows/ci.yml`) runs lint, the test matrix (Linux, macOS and
-Windows on the current and previous Go), a fuzz smoke, cross-compilation for
-all release platforms, `govulncheck`, and a Docker image build — all on the
-free runners with no secrets beyond `GITHUB_TOKEN`. Coverage profiles are
-uploaded as artifacts and summarised on each run's summary page.
-
-### Cutting a release
-
-Releases are tag-driven; nothing else to configure:
-
-```sh
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
-```
-
-That runs `.github/workflows/release.yml`: goreleaser builds
-linux/darwin/windows × amd64/arm64, attaches archives (with LICENSE and
-README), `checksums.txt` and a changelog grouped by conventional-commit type to
-a GitHub Release, and the image is pushed to `ghcr.io/tamerlank/hearth` tagged
-with the version and `latest`. Run `make release-dry` first to see exactly what
-a tag would ship. The Homebrew tap and Scoop manifest are scaffolded but
-commented out in [.goreleaser.yaml](.goreleaser.yaml) with instructions, since
-both need a token that can push to another repository.
-
-Conventions for this repository live in [CLAUDE.md](CLAUDE.md).
+[MIT](LICENSE).

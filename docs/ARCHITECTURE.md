@@ -1,5 +1,27 @@
 # Architecture
 
+Hearth is one Go module, one binary, and about 4 000 lines of code outside
+tests. This document is the map: what the pieces are, which goroutine owns
+what, why the shape is what it is, and where it stops.
+
+## Components
+
+| Package | Role | Depends on |
+|---------|------|------------|
+| `cmd/hearth` | `main`: calls `cli.Execute`, nothing else | `internal/cli` |
+| `internal/cli` | cobra commands `serve`, `connect`, `version`; flags, env binding, signal handling, the 5 s shutdown grace | `internal/server`, `internal/tui`, `pkg/client` |
+| `internal/server` | accept loop, admission caps, handshake, the hub, per-connection read/write loops, Prometheus collectors and the metrics/pprof mux | `internal/ratelimit`, `internal/ring`, `pkg/protocol` |
+| `internal/ratelimit` | token bucket, one per connection, not goroutine-safe by design | — |
+| `internal/ring` | generic fixed-capacity ring buffer used for room history | — |
+| `internal/tui` | bubbletea terminal UI over `pkg/client` | `pkg/client`, `pkg/protocol` |
+| `pkg/client` | public Go client: dial, negotiate JSON, request correlation, bounded event channel, reconnect | `pkg/protocol` |
+| `pkg/protocol` | wire format: `Event`, `Command`, the command table, text and JSON codecs | — |
+| `cmd/hearth-load` | load generator used for `docs/BENCHMARKS.md`; a separate `main`, never in the release binary | `pkg/client`, `pkg/protocol` |
+
+Nothing outside `internal/` and `pkg/` imports `internal/`; `pkg/client` does
+not import the server or the UI. The dependency arrows all point at
+`pkg/protocol`, which is where a wire change starts.
+
 ## Overview
 
 - The server runs an accept loop that hands each accepted `net.Conn` to a connection handler.
@@ -11,6 +33,56 @@
 - Each connection negotiates its encoding once (text or JSON lines) and keeps it. `internal/server/session.go` runs the handshake: the first line is inspected for `HELLO`, then every line is a name attempt until the hub accepts one, and the accepted name is returned to the caller.
 - Shutdown is context-driven: cancelling the server context stops the accept loop, then the hub, then the connections.
 - The terminal client is a thin TUI over `pkg/client`, the public library that handles dialing, negotiation and delivery. `internal/tui` follows the Elm architecture: one `Model` holds every piece of state, `Update` is the only place that mutates it, `View` is a pure function of it, and anything that can block is a `tea.Cmd`. Server events reach the model through a command that blocks on one receive from `Client.Events()` and is re-issued after each event, so no goroutine ever touches the model. `internal/tui/doc.go` has the detail.
+
+## Goroutine model
+
+```
+Serve(ctx, ln)
+ ├─ hub.run(ctx)                      1 goroutine for the whole server
+ ├─ listener closer                   waits on ctx, closes ln
+ └─ per accepted connection
+      ├─ handleConn / readLoop        owns the socket's read side, the scanner,
+      │                               the rate limiter, and the handshake
+      ├─ writeLoop                    owns the socket's write side, seq, and Close
+      └─ interrupt watcher            waits on ctx or the overload signal and
+                                      sets an immediate read deadline
+```
+
+Three goroutines per connection plus two for the server, so 5000 clients is
+about 15 000 goroutines (`go_goroutines` in the load runs). Each has one exit
+path:
+
+- **hub**: `ctx.Done()`.
+- **readLoop**: EOF, a read error, `/quit`, the idle deadline, the overload
+  signal, or the interrupt watcher's deadline on shutdown.
+- **writeLoop**: `send` closed by the hub (on leave or shutdown) or a write
+  error.
+- **interrupt watcher**: `connDone` closed when `handleConn` returns.
+
+Every hub interaction from the client side is a `select` against the hub's
+channel and `ctx.Done()`, so a client can never block on a hub that has
+already exited. The hub itself never blocks on a client: fan-out is `trySend`
+with a `default:` case.
+
+## Ownership rules
+
+Any piece of shared state has exactly one owner goroutine, or a mutex whose
+job is written down here.
+
+| State | Owner | How others reach it |
+|-------|-------|---------------------|
+| `hub.rooms`, `room.members`, `room.history`, `client.name`, `client.room` | hub goroutine | messages on `register`, `leaving`, `requests`, each carrying a reply channel |
+| `client.send` (the outbox) | hub closes it; hub *and* the connection's own read goroutine send on it | `client.mu` serialises `trySend` against `closeSend`; also guards `closed`, `dropped`, `inARow`, `overloaded` |
+| `client.enc`, `client.dec`, `client.seq` | connection goroutine during the handshake, then `writeLoop` | the `go` statement is the happens-before edge; nothing else touches them |
+| `client.bucket`, `client.limited` | the connection's read goroutine only | nothing else needs them, so the bucket has no lock |
+| `client.conn` `Close` | `writeLoop` | readers are interrupted with `SetReadDeadline(now)`, never by closing |
+| `Server.active`, `Server.perIP` | `Server.mu` | admission is one locked check-then-increment |
+| Prometheus collectors | the library's own atomics | — |
+| `pkg/client`: socket reads, reconnect, `events` channel | the client's reader goroutine | `Client.mu` guards `conn`, `name`, `room`, `waiter`; `reqMu` serialises requests |
+
+The rule that produces most of the design is the first row: **the hub owns
+the chat state and nobody else can see it.** Everything below follows from
+keeping that true.
 
 ## Life of a connection
 
@@ -176,3 +248,70 @@ to the socket under no lock beyond the connection pointer's mutex, since each
 context is turned into a socket deadline with `context.AfterFunc`, so no call
 blocks past its context. The same goroutine that reads also reconnects, so
 there is never more than one live socket.
+
+## Design decisions
+
+The long-form log is `DECISIONS.md`; this is the table for the five that
+shape everything else, plus one that the benchmarks turned into a decision.
+
+| Decision | Alternatives considered | Why this one | Trade-off |
+|----------|-------------------------|--------------|-----------|
+| **One hub goroutine** owns rooms, names and history | Shard by room, each shard its own goroutine; or a global `sync.RWMutex` around the maps | Name uniqueness and room membership need one atomic step; one goroutine gives that with no lock ordering to get wrong. The fan-out benchmark puts the hub at 35 ns per recipient, so it delivers a message to 1000 outboxes in 35 µs and never exceeded 4% of CPU in the load runs. | Every command serialises through one goroutine. Sharding would help only after the write path is fixed, and would need a cross-shard name directory. |
+| **Channels, not a mutex**, between connections and the hub | Mutex-guarded maps that connection goroutines touch directly | Ownership is structural: the map is reachable from one goroutine, so there is nothing to forget to lock and `-race` has nothing to find. Reply channels make request/response explicit. | Two small mutexes still exist (`client.mu`, `Server.mu`) for state the hub cannot own; each is documented above. Channel hops cost more than an uncontended lock, which is irrelevant at chat rates. |
+| **Line-delimited text or JSON**, one JSON object per line | Length-prefixed binary framing (protobuf, msgpack) | `telnet` and `nc` are clients; a human can read a capture; every language has a JSON parser and a line reader. The encode cost is 0.5 µs per event, an order of magnitude under the syscall that follows it. | 11% of server CPU under load is JSON marshalling because each recipient encodes the same event. A binary frame would be smaller and faster but unreadable at the prompt. |
+| **Drop on full outbox**, never block the hub | Block until the slow client drains; or unbounded queues; or per-client goroutine that blocks in fan-out | One slow reader must not stall a room. A 32-slot buffer absorbs bursts; beyond it that client alone loses events, is counted, and is disconnected after 100 consecutive drops. Delivery is documented as best-effort. | Chat is lossy under overload. `seq` detects reordering, not loss, so a client cannot ask for a resend. |
+| **Negotiation by the first line** (`HELLO hearth/1 json`) | A version handshake with capability lists; sniffing the first byte; separate ports | One comparison, zero state machine, and a server that does not understand it treats it as a name, which is the correct fallback. | The greeting goes out before the encoding is known, so a JSON client reads exactly one text line first. A second negotiable option would want a real handshake. |
+| **One `write(2)` per event per recipient** (current) | Batch with `bufio.Writer` flushed when the outbox is empty; encode once per broadcast and share the bytes | Simplest correct thing; at rooms of tens of people it is invisible. | The profile at 500 000 deliveries/s puts 55% of CPU in the syscall and 11% in encoding. This is the documented next change; see `docs/BENCHMARKS.md`. |
+
+## Known limitations
+
+- **No authentication, no TLS, no authorisation.** Names are first come, first
+  served; everything is plaintext; any client can join any room. See
+  `SECURITY.md`.
+- **Nothing is durable.** History lives in memory, dies with its room, and
+  does not survive a restart.
+- **Delivery is best-effort.** A client that falls behind loses events and
+  cannot request them again; there are no request ids in the protocol, so a
+  stray `error` event during a `pkg/client` request is attributed to that
+  request.
+- **One process, one hub.** No clustering; a room cannot span servers, and the
+  single hub serialises every command. Measured ceiling on one laptop is
+  around 930 000 deliveries/s before drops start, limited by the write path,
+  not the hub.
+- **Joins are broadcast to the whole room.** Connecting N clients into one
+  room costs N²/2 events, and name uniqueness is a linear walk over every
+  member. Fine at the default `--max-clients 100`; visible at 5000.
+- **A client is in exactly one room.** Following two rooms needs two
+  connections.
+- **The room list in the TUI is a snapshot** refreshed when *you* join or
+  leave; other people's moves between rooms you are not in are not pushed.
+- **Per-address caps key on the address string**, so a NAT looks like one
+  client and an IPv6 host with many addresses looks like many.
+- **Message text is capped at 1024 runes and lines at 4096 bytes**; there is
+  no multi-line message.
+
+## What I'd do next
+
+In the order the evidence supports, not the order that is most fun:
+
+1. **Batch writes and encode once.** `bufio.Writer` in `writeLoop` flushed
+   when `send` is empty, and `[]byte` fan-out from the hub with `seq` patched
+   per connection or moved out of the body. The profile says this is two
+   thirds of server CPU under load. Expected result: the 5000-client run at
+   well under half the CPU, and single-room fan-out past a million
+   deliveries/s.
+2. **TLS and a shared-secret token.** `crypto/tls` on the listener behind
+   `--tls-cert`/`--tls-key`, and a `HELLO hearth/1 json token=...` extension
+   that stays within the first-line negotiation. Both fit the "edge enforces
+   limits, hub stays plain" rule.
+3. **Coalesce joins in large rooms** and index names in a map, so a
+   connect storm is O(N) and `named` is O(1). Both are hub-local changes.
+4. **Request ids** in `hearth/2`, so `pkg/client` can correlate replies
+   properly and run more than one request at a time.
+5. **Persist history** to an append-only file per room, replayed on start,
+   so a restart is not amnesia. Still in-process; a database is a different
+   project.
+6. **Push room-list changes** so the sidebar is live, and let a client sit in
+   more than one room.
+
+Tests, docs and a `DECISIONS.md` entry come with each, per `CONTRIBUTING.md`.

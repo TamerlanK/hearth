@@ -519,6 +519,13 @@ documented install is `go install github.com/charmbracelet/vhs@v0.10.0`.
 The GIF is committed because the README is the first thing a reader sees and
 must not depend on a build step.
 
+### D69. `CHANGELOG.md` starts with a single Unreleased section
+No tag exists yet, so there is nothing to generate between tags. The file
+groups everything to date under Unreleased with Keep a Changelog headings, and
+says that from `v0.1.0` on it is regenerated per release from the conventional
+commits between tags, which is the same grouping goreleaser already applies to
+the GitHub Release notes.
+
 ### D70. `hearth version` reads `debug.ReadBuildInfo` when ldflags are absent
 `go install github.com/TamerlanK/hearth/cmd/hearth@latest` cannot pass
 `-ldflags`, so those builds reported `dev (commit none, built unknown)`. The
