@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +217,34 @@ func TestConnectPlain(t *testing.T) {
 		}
 	case <-time.After(wait):
 		t.Fatal("server did not stop")
+	}
+}
+
+func TestFromBuildInfo(t *testing.T) {
+	vcs := &debug.BuildInfo{
+		Main: debug.Module{Version: "v0.1.0"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+			{Key: "vcs.time", Value: "2026-09-10T12:00:00Z"},
+		},
+	}
+	tests := []struct {
+		name                  string
+		version, commit, date string
+		bi                    *debug.BuildInfo
+		want                  [3]string
+	}{
+		{"no build info", "dev", "none", "unknown", nil, [3]string{"dev", "none", "unknown"}},
+		{"ldflags win", "v1.2.3", "abc1234", "2026-01-01", vcs, [3]string{"v1.2.3", "abc1234", "2026-01-01"}},
+		{"go install fills the gaps", "dev", "none", "unknown", vcs, [3]string{"v0.1.0", "0123456", "2026-09-10T12:00:00Z"}},
+		{"devel module version is ignored", "dev", "none", "unknown", &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, [3]string{"dev", "none", "unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v, c, d := fromBuildInfo(tt.version, tt.commit, tt.date, tt.bi)
+			if got := [3]string{v, c, d}; got != tt.want {
+				t.Errorf("fromBuildInfo() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

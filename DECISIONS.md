@@ -509,3 +509,9 @@ answers with one `malformed line` error; that is documented in
 write at all, which would violate the rule that every blocking call honours
 its context.
 
+### D70. `hearth version` reads `debug.ReadBuildInfo` when ldflags are absent
+`go install github.com/TamerlanK/hearth/cmd/hearth@latest` cannot pass
+`-ldflags`, so those builds reported `dev (commit none, built unknown)`. The
+version command now falls back to the module version and the `vcs.revision`
+and `vcs.time` settings from the binary's build info, and only when the ldflag
+value is still the default, so goreleaser builds are unchanged.

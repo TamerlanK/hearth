@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -99,7 +100,9 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print version, commit, build date and platform",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			info := buildInfo{Version, Commit, Date, runtime.Version(), runtime.GOOS, runtime.GOARCH}
+			bi, _ := debug.ReadBuildInfo()
+			version, commit, date := fromBuildInfo(Version, Commit, Date, bi)
+			info := buildInfo{version, commit, date, runtime.Version(), runtime.GOOS, runtime.GOARCH}
 			w := cmd.OutOrStdout()
 			if asJSON {
 				enc := json.NewEncoder(w)
@@ -113,4 +116,26 @@ func newVersionCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print as a JSON object instead of text")
 	return cmd
+}
+
+func fromBuildInfo(version, commit, date string, bi *debug.BuildInfo) (string, string, string) {
+	if bi == nil {
+		return version, commit, date
+	}
+	if version == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		version = bi.Main.Version
+	}
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if commit == "none" {
+				commit = s.Value[:min(7, len(s.Value))]
+			}
+		case "vcs.time":
+			if date == "unknown" {
+				date = s.Value
+			}
+		}
+	}
+	return version, commit, date
 }
