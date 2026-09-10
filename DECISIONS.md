@@ -429,6 +429,25 @@ the server goes away, while the UI wants to sit there and retry.
 
 ## 2026-09-10 — CI, releases, container image
 
+### D59. No coverage badge
+Every zero-maintenance badge option needs an account somewhere: Codecov and
+Coveralls are third-party services, and the shields.io "endpoint" trick needs a
+JSON file hosted behind a stable URL, which on GitHub means a gist plus a PAT
+to update it — GITHUB_TOKEN cannot write gists. The brief said to skip it in
+that case, so CI uploads each matrix cell's `coverage.out` as an artifact and
+prints the total on the run's summary page instead. Revisit if the project
+adopts Codecov.
+
+### D60. Module and build caching comes from setup-go, not actions/cache
+`actions/setup-go@v5` caches the module and build caches keyed on `go.sum` by
+default. A hand-rolled `actions/cache` block would duplicate that for no gain.
+
+### D61. govulncheck runs via `go run`, not its action
+`golang/govulncheck-action` installs its own Go toolchain, which can lag behind
+`go.mod`'s requirement and fail the job for reasons unrelated to
+vulnerabilities. `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` on the
+job's own toolchain is one line and always matches.
+
 ### D62. The Dockerfile cross-compiles instead of emulating
 The release image is multi-arch (amd64 + arm64). Building the arm64 half under
 QEMU means running the Go compiler emulated, which is minutes of wasted CI. The
