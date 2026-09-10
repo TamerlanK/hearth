@@ -96,6 +96,7 @@ type RoomInfo struct {
 type Stats struct {
 	Dropped    uint64
 	Reconnects uint64
+	Attempt    uint64
 }
 
 type Client struct {
@@ -110,6 +111,7 @@ type Client struct {
 	state      atomic.Int32
 	dropped    atomic.Uint64
 	reconnects atomic.Uint64
+	attempt    atomic.Uint64
 
 	reqMu sync.Mutex
 
@@ -179,7 +181,7 @@ func (c *Client) State() State {
 }
 
 func (c *Client) Stats() Stats {
-	return Stats{Dropped: c.dropped.Load(), Reconnects: c.reconnects.Load()}
+	return Stats{Dropped: c.dropped.Load(), Reconnects: c.reconnects.Load(), Attempt: c.attempt.Load()}
 }
 
 func (c *Client) Close() error {
@@ -492,6 +494,7 @@ func (c *Client) readLoop(conn net.Conn) error {
 func (c *Client) reconnect() (net.Conn, error) {
 	delay := c.opts.Backoff.Min
 	for attempt := 1; ; attempt++ {
+		c.attempt.Store(uint64(attempt))
 		wait := delay/2 + rand.N(delay/2+1)
 		c.log.Info("reconnecting", "event", "reconnect", "attempt", attempt, "in", wait)
 		select {
@@ -503,6 +506,7 @@ func (c *Client) reconnect() (net.Conn, error) {
 		conn, err := c.connect(ctx)
 		cancel()
 		if err == nil {
+			c.attempt.Store(0)
 			return conn, nil
 		}
 		if c.ctx.Err() != nil {

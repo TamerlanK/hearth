@@ -54,7 +54,7 @@ join. `Options.DialTimeout` (10s by default) covers all of that.
 | `Send(ctx, cmd)` | Any `protocol.Command`, unacknowledged | The line has been written |
 | `Events()` | Every event the server sends, in order | Closed when the client closes |
 | `State()` | `Connecting`, `Connected`, `Reconnecting` or `Closed` | Safe from any goroutine |
-| `Stats()` | `Dropped` events and `Reconnects` so far | Safe from any goroutine |
+| `Stats()` | `Dropped` events, `Reconnects` so far and the in-flight reconnect `Attempt` | Safe from any goroutine |
 | `Close()` | Disconnects and closes `Events()` | Every goroutine has exited |
 
 Room names are normalised the way the server does it: `ops` and `#ops` are the
@@ -118,6 +118,11 @@ Off by default. With `Options.Reconnect` set:
    history is replayed by the server as usual and arrives on `Events()`.
 4. On success the client emits a `system` event with text `reconnected`,
    `Stats().Reconnects` goes up and `State()` returns to `Connected`.
+
+`Stats().Attempt` is the number of the dial currently being attempted: 1 for the
+first retry after a drop, climbing with each failure, and back to 0 once a dial
+succeeds. There is no channel for state changes, so poll `State()` and `Stats()`
+if you want to show progress — that is what the terminal UI's status bar does.
 
 Attempts continue until they succeed or the client is closed. Cancelling the
 context passed to `Dial` does **not** stop a running client; that context only
