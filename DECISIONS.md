@@ -351,6 +351,7 @@ The TUI is Phase 7. Refusing to run until then would leave the default
 invocation broken for anyone who installs the binary, so the command prints one
 notice to stderr and falls through to the line client. Remove the fallback when
 the TUI lands; `--plain` stays as the scripting path.
+**Superseded by D58:** the TUI landed and the fallback is gone.
 
 ### D50. The plain client's stdin reader is not cancelled on Ctrl+C
 Reading `os.Stdin` cannot be interrupted portably, so the goroutine draining
@@ -417,3 +418,11 @@ CLAUDE.md forbids comments in Go code, and the rule says it holds "unless the
 user says otherwise in the current session". The brief asked for a `doc.go`
 explaining the model/update/view split and the event bridging, so this one file
 has prose. Everything else in `internal/tui` is comment-free as usual.
+
+### D58. `hearth connect` refuses a non-terminal stdout
+The TUI needs a terminal; piping `hearth connect` used to be a working way to
+script against the server. Rather than silently falling back, the command
+checks `os.Stdout.Stat()` for `os.ModeCharDevice` and errors with a pointer to
+`--plain`, which is the supported scripting path and is what the old default
+did. `--plain` also keeps reconnect off: a script wants the pipe to end when
+the server goes away, while the UI wants to sit there and retry.

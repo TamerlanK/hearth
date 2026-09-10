@@ -4,8 +4,8 @@ Hearth is a TCP chat server and terminal client shipped as a single binary. It
 speaks a small line-oriented protocol, keeps room state in one place, and gives
 you a terminal UI for joining a room without installing anything else.
 
-**Status: in development.** The server and a plain line client work; the
-terminal UI is next, and until it lands `hearth connect` runs the plain client.
+**Status: in development.** The server, the terminal UI and the Go client
+library work.
 
 ## Quickstart
 
@@ -29,13 +29,61 @@ Terminal 2 (and 3, with another name):
 hearth connect localhost:4000 --name alice
 ```
 
+`hearth connect` opens the terminal UI: rooms and members on the left, the
+transcript on the right, a prompt at the bottom and a status bar under it.
+
+<!-- screenshot: docs/screenshot.png — two terminals, #golang with an unread
+     badge on #general. Not committed yet. -->
+
+```
+┌ sidebar ───────────┬ messages ───────────────────────────┐
+│ Rooms              │ [15:04] alice        hello everyone │
+│  #general (3) •2   │ [15:04] bob          hey            │
+│ >#golang  (1)      │ [15:04]            * carol joined   │
+│                    │                                     │
+│ Users in #golang   ├─────────────────────────────────────┤
+│  you               │ > type a message or /command_       │
+│  carol             │                                     │
+├────────────────────┴─────────────────────────────────────┤
+│ connected to host:4000 as alice · #golang · ?: help      │
+└──────────────────────────────────────────────────────────┘
+```
+
 Type a line to send it to the room. `/who` lists users, `/join <room>` moves
-rooms, `/msg <name> <text>` is private, `/quit` leaves, `/help` lists commands.
-Ctrl+C in either terminal exits cleanly; the server waits up to 5s for clients
-to drain.
+rooms, `/msg <name> <text>` is private, `/quit` leaves, `?` or `F1` opens the
+help overlay. Ctrl+C in either terminal exits cleanly; the server waits up to 5s
+for clients to drain.
+
+The UI needs at least 80x24 to look as drawn. Below 60 columns the sidebar goes
+away and the transcript takes the full width; below 24x6 it says so rather than
+drawing a broken frame. Colours follow the terminal's light or dark background
+and are dropped entirely when `NO_COLOR` is set.
+
+Unlike `--plain`, the UI reconnects on its own when the server goes away: the
+status bar turns into `reconnecting to host:4000… (attempt N)` and sending is
+refused with an inline error rather than hanging.
+
+### Keybindings
+
+| Key | What it does |
+|-----|--------------|
+| `Enter` | Send the line, or join the highlighted room when the rooms pane has focus |
+| `Tab` / `Shift+Tab` | Cycle focus: input → messages → rooms |
+| `Ctrl+N` / `Ctrl+P` | Join the next / previous room |
+| `Up` / `Down` | Command history in the input, scroll in the messages pane, pick a room in the rooms pane |
+| `PgUp` / `PgDn` | Scroll the transcript |
+| `Ctrl+L` | Clear the current room's transcript |
+| `?` | Toggle the help overlay (outside the input) |
+| `F1` | Toggle the help overlay |
+| `Esc` | Close the help overlay |
+| `Ctrl+C` | Close the client and quit |
+
+Scrolling up locks the view; a `↓ new messages` pill appears above the prompt
+until you scroll back to the bottom. Rooms you are not looking at carry a `•N`
+unread badge.
 
 `--plain` runs a minimal stdin/stdout client instead of the terminal UI, which
-makes scripting easy:
+makes scripting easy (and is required when stdout is not a terminal):
 
 ```sh
 echo "deploy finished" | hearth connect localhost:4000 --plain --name ci --room ops
