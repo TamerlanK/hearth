@@ -267,3 +267,26 @@ func TestSlowConsumerDropsOldest(t *testing.T) {
 	}
 	waitFor(t, bob, "alice's message", msgFrom("alice", "still here"))
 }
+
+func TestCancelledSendKeepsConnectionUsable(t *testing.T) {
+	addr, _ := startServer(t, "127.0.0.1:0")
+	alice := dial(t, addr, client.Options{Name: "alice"})
+	bob := dial(t, addr, client.Options{Name: "bob"})
+	waitFor(t, alice, "bob joined", func(e protocol.Event) bool { return e.Kind == protocol.Join && e.From == "bob" })
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := alice.Say(cancelled, "never sent"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Say with a cancelled context = %v, want context.Canceled", err)
+	}
+
+	ctx, stop := context.WithTimeout(context.Background(), wait)
+	defer stop()
+	if err := alice.Say(ctx, "still here"); err != nil {
+		t.Fatalf("Say after a cancelled send: %v", err)
+	}
+	waitFor(t, bob, "alice's message", msgFrom("alice", "still here"))
+	if got := alice.State(); got != client.Connected {
+		t.Errorf("state after a cancelled send = %s, want connected", got)
+	}
+}

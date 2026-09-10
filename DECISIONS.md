@@ -483,3 +483,15 @@ operator-only, so the profile handlers register on the same mux. Consequence:
 `SECURITY.md` says to keep on a private interface. Revisit if the metrics port
 ever becomes something a load balancer scrapes across a network boundary.
 
+### D67. A cancelled `Send` interrupts only the write, and clears its deadline
+The load tool found that `Client.write` interrupted a cancelled context with
+`SetDeadline(now)`, which also failed the reader goroutine's next read and tore
+the connection down. It now checks `ctx.Err()` before touching the socket, uses
+`SetWriteDeadline` only, and if the interrupt fired it waits for it to finish
+and clears the write deadline before returning. The residual cost is that a
+write cancelled mid-line may leave a partial line on the wire, which the server
+answers with one `malformed line` error; that is documented in
+`docs/CLIENT.md` and is preferable to the alternative of never interrupting a
+write at all, which would violate the rule that every blocking call honours
+its context.
+

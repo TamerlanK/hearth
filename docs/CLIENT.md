@@ -101,6 +101,11 @@ Consequences worth knowing:
   context with a deadline.
 - `Say` and `PrivMsg` have no acknowledgement in the protocol and return as
   soon as the line is written. Their errors, if any, arrive as `error` events.
+- Cancelling the context passed to a call cancels that call only. A context
+  that is already done returns before anything is written; one that expires
+  mid-write interrupts the write, and the connection stays usable. The one
+  thing a cancelled write can leave behind is a partial line, which the server
+  answers with a single `malformed line` error event.
 
 ## Reconnect
 

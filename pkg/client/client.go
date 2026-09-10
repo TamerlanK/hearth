@@ -331,15 +331,34 @@ func (c *Client) currentName() string {
 }
 
 func (c *Client) write(ctx context.Context, conn net.Conn, cmd protocol.Command) error {
-	stop := context.AfterFunc(ctx, func() { c.interrupt(conn) })
-	defer stop()
-	if err := protocol.EncodeCommand(conn, cmd); err != nil {
-		if ctx.Err() != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	fired := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(fired)
+		c.interruptWrite(conn)
+	})
+	err := protocol.EncodeCommand(conn, cmd)
+	if !stop() {
+		<-fired
+		if derr := conn.SetWriteDeadline(time.Time{}); derr != nil && !errors.Is(derr, net.ErrClosed) {
+			c.log.Warn("clear write deadline", "event", "client_error", "err", derr)
+		}
+		if err != nil {
 			return ctx.Err()
 		}
+	}
+	if err != nil {
 		return fmt.Errorf("send %s: %w", cmd.Name, err)
 	}
 	return nil
+}
+
+func (c *Client) interruptWrite(conn net.Conn) {
+	if err := conn.SetWriteDeadline(time.Now()); err != nil && !errors.Is(err, net.ErrClosed) {
+		c.log.Warn("interrupt blocked write", "event", "client_error", "err", err)
+	}
 }
 
 func (c *Client) interrupt(conn net.Conn) {
