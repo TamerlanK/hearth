@@ -1,5 +1,11 @@
 # hearth
 
+[![CI](https://github.com/TamerlanK/hearth/actions/workflows/ci.yml/badge.svg)](https://github.com/TamerlanK/hearth/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/TamerlanK/hearth)](https://github.com/TamerlanK/hearth/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/TamerlanK/hearth)](https://goreportcard.com/report/github.com/TamerlanK/hearth)
+[![Go Reference](https://pkg.go.dev/badge/github.com/TamerlanK/hearth.svg)](https://pkg.go.dev/github.com/TamerlanK/hearth)
+[![License: MIT](https://img.shields.io/github/license/TamerlanK/hearth)](LICENSE)
+
 Hearth is a TCP chat server and terminal client shipped as a single binary. It
 speaks a small line-oriented protocol, keeps room state in one place, and gives
 you a terminal UI for joining a room without installing anything else.
@@ -7,10 +13,30 @@ you a terminal UI for joining a room without installing anything else.
 **Status: in development.** The server, the terminal UI and the Go client
 library work.
 
+## Install
+
+With Go:
+
+```sh
+go install github.com/TamerlanK/hearth/cmd/hearth@latest
+```
+
+From a [release](https://github.com/TamerlanK/hearth/releases/latest): download
+the archive for your OS and architecture, verify it against `checksums.txt`,
+unpack, and put `hearth` on your PATH.
+
+With Docker (the image only makes sense for the server; the client wants your
+terminal):
+
+```sh
+docker run --rm -p 4000:4000 -p 9090:9090 ghcr.io/tamerlank/hearth:latest
+```
+
+Or from a clone: `make build` puts the binary in `bin/hearth`.
+
 ## Quickstart
 
 ```sh
-go install github.com/TamerlanK/hearth/cmd/hearth@latest   # or: make build -> bin/hearth
 hearth serve                                                # listens on :4000
 hearth connect localhost:4000 --name alice                  # in another terminal
 ```
@@ -141,6 +167,16 @@ uses:
 hearth serve --addr :4000 --metrics-addr :9090 --log-format json --log-level info
 ```
 
+Or the whole thing with Prometheus already scraping it:
+
+```sh
+docker compose up        # chat on :4000, Prometheus UI on http://localhost:9090
+```
+
+The compose file builds the server image (12 MB, distroless, non-root) and
+starts Prometheus with [prometheus.yml](prometheus.yml) pointed at it; query
+any `hearth_*` metric from the table below at `http://localhost:9090`.
+
 On start the server logs one banner with the resolved configuration. The
 configuration is rendered through `Config.LogValue`, an explicit allowlist of
 fields, so a value that is not named there can never reach the log — that is
@@ -226,17 +262,50 @@ See [docs/CLIENT.md](docs/CLIENT.md).
 Requires Go 1.24+.
 
 ```sh
-make check   # fmt, vet, lint, test -race
-make fuzz    # fuzz both protocol decoders, 10s each
-make build   # -> bin/hearth
+make check         # fmt, vet, lint, test -race — the gate for every change
+make fuzz          # fuzz both protocol decoders, 10s each
+make build         # -> bin/hearth
+make docker        # build the container image as hearth:<version>
+make release-dry   # goreleaser snapshot: all six platforms into dist/, no publishing
 ```
 
 `make lint` needs `golangci-lint` on your PATH and is skipped with a notice when
-it is missing:
+it is missing; `make release-dry` needs `goreleaser`:
 
 ```sh
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 go install golang.org/x/tools/cmd/goimports@latest
+go install github.com/goreleaser/goreleaser/v2@latest
 ```
+
+Longer fuzzing runs go through `go test` directly, e.g.:
+
+```sh
+go test ./pkg/protocol -run '^$' -fuzz FuzzJSONDecode -fuzztime 10m
+```
+
+CI (`.github/workflows/ci.yml`) runs lint, the test matrix (Linux, macOS and
+Windows on the current and previous Go), a fuzz smoke, cross-compilation for
+all release platforms, `govulncheck`, and a Docker image build — all on the
+free runners with no secrets beyond `GITHUB_TOKEN`. Coverage profiles are
+uploaded as artifacts and summarised on each run's summary page.
+
+### Cutting a release
+
+Releases are tag-driven; nothing else to configure:
+
+```sh
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+That runs `.github/workflows/release.yml`: goreleaser builds
+linux/darwin/windows × amd64/arm64, attaches archives (with LICENSE and
+README), `checksums.txt` and a changelog grouped by conventional-commit type to
+a GitHub Release, and the image is pushed to `ghcr.io/tamerlank/hearth` tagged
+with the version and `latest`. Run `make release-dry` first to see exactly what
+a tag would ship. The Homebrew tap and Scoop manifest are scaffolded but
+commented out in [.goreleaser.yaml](.goreleaser.yaml) with instructions, since
+both need a token that can push to another repository.
 
 Conventions for this repository live in [CLAUDE.md](CLAUDE.md).
