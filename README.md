@@ -4,22 +4,58 @@ Hearth is a TCP chat server and terminal client shipped as a single binary. It
 speaks a small line-oriented protocol, keeps room state in one place, and gives
 you a terminal UI for joining a room without installing anything else.
 
-**Status: in development.** The server works; the terminal client is next.
+**Status: in development.** The server and a plain line client work; the
+terminal UI is next, and until it lands `hearth connect` runs the plain client.
 
 ## Quickstart
 
 ```sh
-make run-server              # listens on :4000
-telnet localhost 4000        # in two other terminals; nc also works
+go install github.com/TamerlanK/hearth/cmd/hearth@latest   # or: make build -> bin/hearth
+hearth serve                                                # listens on :4000
+hearth connect localhost:4000 --name alice                  # in another terminal
 ```
 
-Enter a name when prompted, then type. `/who` lists users, `/join <room>` moves
+### Try it in 30 seconds
+
+Terminal 1:
+
+```sh
+hearth serve --addr :4000
+```
+
+Terminal 2 (and 3, with another name):
+
+```sh
+hearth connect localhost:4000 --name alice
+```
+
+Type a line to send it to the room. `/who` lists users, `/join <room>` moves
 rooms, `/msg <name> <text>` is private, `/quit` leaves, `/help` lists commands.
-Flags: `hearth serve --addr :4000 --max-clients 100 --idle-timeout 5m`.
+Ctrl+C in either terminal exits cleanly; the server waits up to 5s for clients
+to drain.
+
+`--plain` runs a minimal stdin/stdout client instead of the terminal UI, which
+makes scripting easy:
+
+```sh
+echo "deploy finished" | hearth connect localhost:4000 --plain --name ci --room ops
+```
+
+Every flag has an environment variable named after it, `HEARTH_` plus the flag
+name in upper case with dashes as underscores. Flags win over the environment,
+and the environment wins over the default:
+
+```sh
+HEARTH_ADDR=:5000 HEARTH_LOG_FORMAT=json hearth serve
+```
+
+`hearth version --json` prints the build info as JSON, and `hearth completion
+bash|zsh|fish|powershell` prints a shell completion script.
 
 From Go, import `pkg/client` and chat in a dozen lines; see
 [docs/CLIENT.md](docs/CLIENT.md).
 
+`telnet localhost 4000` still works: enter a name when prompted, then type.
 Programs should speak the JSON encoding instead: send `HELLO hearth/1 json` as
 the first line and every line in both directions becomes one JSON object. See
 [docs/PROTOCOL.md](docs/PROTOCOL.md), which has a working Python client.
@@ -64,6 +100,9 @@ where future secrets (TLS key paths, tokens) stay out.
 
 ### Flags
 
+Each flag reads `HEARTH_<FLAG>` from the environment when it is not given on
+the command line; `hearth serve --help` names the variable next to each flag.
+
 | Flag | Default | What it does |
 |------|---------|--------------|
 | `--addr` | `:4000` | Chat listener address |
@@ -71,9 +110,9 @@ where future secrets (TLS key paths, tokens) stay out.
 | `--log-format` | `text` | `text` or `json` |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
 | `--max-clients` | `100` | Concurrent connections (0 = unlimited) |
-| `--max-clients-per-ip` | `10` | Concurrent connections from one address (0 = unlimited) |
+| `--max-per-ip` | `10` | Concurrent connections from one address (0 = unlimited) |
 | `--idle-timeout` | `5m` | Disconnect clients silent this long (0 = never) |
-| `--history-size` | `50` | Messages replayed when joining a room |
+| `--history` | `50` | Messages kept per room and replayed when joining it |
 | `--default-room` | `general` | Room every client starts in |
 | `--max-rooms` | `64` | Rooms that may exist at once (0 = unlimited) |
 | `--rate` | `5` | Sustained lines per second per client (0 = unlimited) |

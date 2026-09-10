@@ -39,7 +39,7 @@ run-server:
 	go run ./cmd/hearth serve
 
 run-client:
-	go run ./cmd/hearth connect localhost:4000
+	go run ./cmd/hearth connect localhost:4000 --plain
 
 clean:
 	rm -rf bin

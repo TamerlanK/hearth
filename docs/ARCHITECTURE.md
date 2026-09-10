@@ -149,6 +149,21 @@ Two pieces of state live outside the hub and are documented where they sit:
 
 `client.enc`, `client.dec` and `client.seq` are single-writer by construction: the connection goroutine sets the codec during negotiation and writes the handshake events itself, then starts `writeLoop`, which is the only goroutine to touch `seq` afterwards. The `go` statement provides the happens-before edge. That is what makes `seq` monotonic per connection with no counter lock.
 
+## The command line
+
+`internal/cli` holds the cobra commands and nothing else: `serve` builds a
+`server.Config` from flags, opens the listener, and runs `server.Serve` under a
+signal-cancelled context. On SIGINT or SIGTERM it logs the number of clients
+still connected and waits up to 5s for `Serve` to return before giving up with
+an error. Every flag also reads `HEARTH_<FLAG>` from the environment when it is
+not set on the command line (see `DECISIONS.md` D48).
+
+`connect --plain` is two goroutines over one `client.Client`: one parses stdin
+lines with the text codec and hands the commands to `Send`, the other renders
+`Events()` with the same codec onto stdout. Whichever ends first (EOF on stdin,
+the server closing, or Ctrl+C) makes the command return, and `Close` unwinds
+the other.
+
 ## The client library
 
 `pkg/client` is the public library the CLI and the future TUI use; see

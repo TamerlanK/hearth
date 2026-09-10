@@ -333,3 +333,35 @@ shows signatures only. The prose lives in `docs/CLIENT.md` and the two
 `Example` functions in `example_test.go`, which pkg.go.dev renders as runnable
 examples. Revisit if the package is published on its own and the rule is
 relaxed for exported identifiers.
+
+## 2026-09-10 — Command-line interface
+
+### D48. Environment variables are bound by hand, not with viper
+`applyEnv` in `internal/cli/cli.go` walks the invoked command's flags in a
+`PersistentPreRunE` and sets any flag the user did not pass from
+`HEARTH_<FLAG>`. Because it runs after parsing, flags always win, and because it
+calls `FlagSet.Set` the value goes through the flag's own parser, so a bad
+`HEARTH_RATE` fails the same way a bad `--rate` does. The mapping is stamped
+into every flag's usage string at construction. Thirty lines instead of a
+dependency the allowed list does not include. Revisit if config files are ever
+wanted, which is the point where viper starts paying for itself.
+
+### D49. `hearth connect` without `--plain` runs the plain client for now
+The TUI is Phase 7. Refusing to run until then would leave the default
+invocation broken for anyone who installs the binary, so the command prints one
+notice to stderr and falls through to the line client. Remove the fallback when
+the TUI lands; `--plain` stays as the scripting path.
+
+### D50. The plain client's stdin reader is not cancelled on Ctrl+C
+Reading `os.Stdin` cannot be interrupted portably, so the goroutine draining
+stdin is the one exception to the no-goroutine-outlives-its-context rule. On
+Ctrl+C the command returns and the process exits, which is the only exit path
+that goroutine needs. In tests stdin is a pipe that the test closes, so nothing
+leaks there.
+
+### D51. Serve's 5s shutdown deadline is enforced in the CLI, not the server
+`server.Serve` keeps its contract of returning only when every goroutine has
+ended. The `serve` command waits on it with a 5s timer, logs how many clients
+were still connected, and exits 1 with `shutdown timed out` if the timer wins.
+Putting the deadline in the CLI keeps the library honest about what it did and
+leaves the policy where the operator can see it.
