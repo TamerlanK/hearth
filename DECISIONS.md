@@ -456,6 +456,15 @@ build stage is pinned to `--platform=$BUILDPLATFORM` and cross-compiles with
 needed to *run* the final layers, not to build the binary. The final image is
 `gcr.io/distroless/static:nonroot`, ~12 MB total, uid 65532.
 
+### D63. GHCR publishing uses docker/build-push-action, not goreleaser's dockers
+goreleaser can build images, but its classic docker pipe shells out to the
+host docker and needs per-arch manifests stitched by hand. The
+metadata/login/build-push action trio is the boring, documented path, handles
+the multi-arch manifest and the `TamerlanK` → `tamerlank` lowercasing itself,
+and keeps the image build identical to the one CI already tests. The cost is
+that the image version string is injected by build-args rather than shared with
+goreleaser's ldflags — same values, two places, both fed from the tag.
+
 ### D64. Prometheus port 9090 on the host belongs to Prometheus
 Both hearth's `--metrics-addr` and Prometheus's UI default to 9090. In
 docker-compose only Prometheus is published on the host (`9090:9090`); hearth's

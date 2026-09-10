@@ -1,0 +1,104 @@
+version: 2
+
+project_name: hearth
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/hearth
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/TamerlanK/hearth/internal/cli.Version={{ .Version }}
+      - -X github.com/TamerlanK/hearth/internal/cli.Commit={{ .ShortCommit }}
+      - -X github.com/TamerlanK/hearth/internal/cli.Date={{ .Date }}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: git
+  groups:
+    - title: Features
+      regexp: '^feat(\(.*\))?!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^fix(\(.*\))?!?:'
+      order: 1
+    - title: Performance
+      regexp: '^perf(\(.*\))?!?:'
+      order: 2
+    - title: Refactoring
+      regexp: '^refactor(\(.*\))?!?:'
+      order: 3
+    - title: Documentation
+      regexp: '^docs(\(.*\))?!?:'
+      order: 4
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^test(\(.*\))?!?:'
+      - '^chore(\(.*\))?!?:'
+
+release:
+  draft: false
+  prerelease: auto
+
+# Homebrew tap. To enable:
+#   1. Create the repository github.com/TamerlanK/homebrew-tap.
+#   2. Create a personal access token with `repo` scope on that repository
+#      (GITHUB_TOKEN cannot push to another repo) and add it to this repo's
+#      Actions secrets as HOMEBREW_TAP_GITHUB_TOKEN.
+#   3. Export it to goreleaser in release.yml:
+#        env:
+#          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+#   4. Uncomment:
+#
+# brews:
+#   - repository:
+#       owner: TamerlanK
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+#     homepage: https://github.com/TamerlanK/hearth
+#     description: A TCP chat server and terminal client in one binary
+#     license: MIT
+#     test: |
+#       system "#{bin}/hearth version"
+
+# Scoop manifest. To enable:
+#   1. Create the repository github.com/TamerlanK/scoop-bucket.
+#   2. Reuse the same cross-repo token as the Homebrew tap (or create one),
+#      exported as SCOOP_BUCKET_GITHUB_TOKEN in release.yml.
+#   3. Uncomment:
+#
+# scoops:
+#   - repository:
+#       owner: TamerlanK
+#       name: scoop-bucket
+#       token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+#     homepage: https://github.com/TamerlanK/hearth
+#     description: A TCP chat server and terminal client in one binary
+#     license: MIT

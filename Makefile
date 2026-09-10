@@ -5,7 +5,7 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  := -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
-.PHONY: build test fuzz lint fmt vet check docker run-server run-client clean
+.PHONY: build test fuzz lint fmt vet check release-dry docker run-server run-client clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/hearth
@@ -34,6 +34,9 @@ vet:
 	go vet ./...
 
 check: fmt vet lint test
+
+release-dry:
+	goreleaser release --snapshot --clean
 
 docker:
 	docker build -t hearth:$(VERSION) \
