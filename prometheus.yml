@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: hearth
+    static_configs:
+      - targets: ["hearth:9090"]

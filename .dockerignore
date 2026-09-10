@@ -1,0 +1,10 @@
+.git
+bin/
+dist/
+*.out
+*.test
+docs/
+README.md
+DECISIONS.md
+CLAUDE.md
+.github/

@@ -426,3 +426,20 @@ checks `os.Stdout.Stat()` for `os.ModeCharDevice` and errors with a pointer to
 `--plain`, which is the supported scripting path and is what the old default
 did. `--plain` also keeps reconnect off: a script wants the pipe to end when
 the server goes away, while the UI wants to sit there and retry.
+
+## 2026-09-10 — CI, releases, container image
+
+### D62. The Dockerfile cross-compiles instead of emulating
+The release image is multi-arch (amd64 + arm64). Building the arm64 half under
+QEMU means running the Go compiler emulated, which is minutes of wasted CI. The
+build stage is pinned to `--platform=$BUILDPLATFORM` and cross-compiles with
+`GOOS=$TARGETOS GOARCH=$TARGETARCH`, which Go does natively — QEMU is only
+needed to *run* the final layers, not to build the binary. The final image is
+`gcr.io/distroless/static:nonroot`, ~12 MB total, uid 65532.
+
+### D64. Prometheus port 9090 on the host belongs to Prometheus
+Both hearth's `--metrics-addr` and Prometheus's UI default to 9090. In
+docker-compose only Prometheus is published on the host (`9090:9090`); hearth's
+metrics stay on the compose network where Prometheus scrapes `hearth:9090`.
+`docker compose up` therefore gives the UI at `http://localhost:9090` as the
+brief asked, and the chat port 4000 is the only hearth port exposed.

@@ -1,0 +1,14 @@
+services:
+  hearth:
+    build: .
+    ports:
+      - "4000:4000"
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - hearth
