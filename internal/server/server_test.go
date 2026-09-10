@@ -875,6 +875,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	if health := httpGet(t, "http://"+ln.Addr().String()+"/healthz"); !strings.Contains(health, "ok") {
 		t.Errorf("/healthz = %q, want ok", health)
 	}
+	if index := httpGet(t, "http://"+ln.Addr().String()+"/debug/pprof/"); !strings.Contains(index, "goroutine") {
+		t.Errorf("/debug/pprof/ does not list the goroutine profile")
+	}
 }
 
 func httpGet(t *testing.T, url string) string {

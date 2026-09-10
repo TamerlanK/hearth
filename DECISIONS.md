@@ -471,3 +471,15 @@ docker-compose only Prometheus is published on the host (`9090:9090`); hearth's
 metrics stay on the compose network where Prometheus scrapes `hearth:9090`.
 `docker compose up` therefore gives the UI at `http://localhost:9090` as the
 brief asked, and the chat port 4000 is the only hearth port exposed.
+
+## 2026-09-10 — Benchmarks, demo and final documentation
+
+### D65. `/debug/pprof/` lives on the metrics port
+The profile behind `docs/BENCHMARKS.md` had to come from the real server under
+real load, not from a benchmark harness. `net/http/pprof` is standard library
+and the metrics listener already exists, is optional, and is documented as
+operator-only, so the profile handlers register on the same mux. Consequence:
+`--metrics-addr` now exposes goroutine dumps and CPU profiles, which
+`SECURITY.md` says to keep on a private interface. Revisit if the metrics port
+ever becomes something a load balancer scrapes across a network boundary.
+
