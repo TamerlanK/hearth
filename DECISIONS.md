@@ -509,6 +509,16 @@ answers with one `malformed line` error; that is documented in
 write at all, which would violate the rule that every blocking call honours
 its context.
 
+### D68. The demo is one vhs tape driving tmux, with vhs pinned to v0.10.0
+`charmbracelet/vhs` records one terminal, so the two side-by-side clients come
+from a tmux split inside that terminal, which also means the tape is a single
+file that `make demo` can replay. vhs v0.12.0 cancels its own context before
+invoking ffmpeg and silently writes no output (`evaluator.go`: `teardown()`
+cancels `ctx`, then `Render(ctx)` runs `exec.CommandContext` on it), so the
+documented install is `go install github.com/charmbracelet/vhs@v0.10.0`.
+The GIF is committed because the README is the first thing a reader sees and
+must not depend on a build step.
+
 ### D70. `hearth version` reads `debug.ReadBuildInfo` when ldflags are absent
 `go install github.com/TamerlanK/hearth/cmd/hearth@latest` cannot pass
 `-ldflags`, so those builds reported `dev (commit none, built unknown)`. The
