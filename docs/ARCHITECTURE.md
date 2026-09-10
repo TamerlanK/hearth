@@ -10,7 +10,7 @@
 - `pkg/protocol` owns the wire format: `Event`, `Command`, the `Encoder`/`Decoder` interfaces and the two codecs. The server passes `protocol.Event` values around and never formats a string for the wire; rendering happens inside the codec a client owns.
 - Each connection negotiates its encoding once (text or JSON lines) and keeps it. `internal/server/session.go` runs the handshake: the first line is inspected for `HELLO`, then every line is a name attempt until the hub accepts one, and the accepted name is returned to the caller.
 - Shutdown is context-driven: cancelling the server context stops the accept loop, then the hub, then the connections.
-- The terminal client will be a thin TUI over `pkg/client`, the public library that handles dialing, negotiation and delivery.
+- The terminal client is a thin TUI over `pkg/client`, the public library that handles dialing, negotiation and delivery. `internal/tui` follows the Elm architecture: one `Model` holds every piece of state, `Update` is the only place that mutates it, `View` is a pure function of it, and anything that can block is a `tea.Cmd`. Server events reach the model through a command that blocks on one receive from `Client.Events()` and is re-issued after each event, so no goroutine ever touches the model. `internal/tui/doc.go` has the detail.
 
 ## Life of a connection
 
@@ -166,7 +166,7 @@ the other.
 
 ## The client library
 
-`pkg/client` is the public library the CLI and the future TUI use; see
+`pkg/client` is the public library the CLI and the TUI use; see
 `docs/CLIENT.md` for the user-facing contract. Inside, one reader goroutine
 owns the socket: it decodes JSON events, resolves the single pending request
 if the event matches (or is an error), and pushes every event onto a 256-slot

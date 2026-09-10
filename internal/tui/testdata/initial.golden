@@ -1,0 +1,30 @@
+Rooms                   │                                                                           
+ #general (3)           │                                                                           
+>#golang (2)            │                                                                           
+                        │                                                                           
+Users in #golang        │                                                                           
+ you                    │                                                                           
+ carol                  │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │                                                                           
+                        │[15:04]            * alice joined #golang                                  
+                        │[15:04] carol        hello everyone                                        
+                        │[15:04] you          hey                                                   
+                        │[15:04] carol→       a word in private, and enough of them to need wrapping
+                        │                     across the pane                                       
+                        │[15:04]            ! unknown command dance                                 
+                        ┴───────────────────────────────────────────────────────────────────────────
+                        │> type a message or /command                                               
+ connected to chat.example.com:4000 as alice · #golang · Tab: panes · ?: help                       

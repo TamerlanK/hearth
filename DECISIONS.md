@@ -365,3 +365,55 @@ ended. The `serve` command waits on it with a 5s timer, logs how many clients
 were still connected, and exits 1 with `shutdown timed out` if the timer wins.
 Putting the deadline in the CLI keeps the library honest about what it did and
 leaves the policy where the operator can see it.
+
+## 2026-09-10 — Terminal UI
+
+### D52. The bubbletea model is a `*Model`, not a value
+The Elm architecture reads best with a value model, but `Model` embeds a
+`viewport.Model` and a `textinput.Model`, each of which embeds a dozen
+`lipgloss.Style` structs; the whole thing weighs about 17KB and golangci-lint's
+`gocritic hugeParam` refuses to let it be copied on every message. `*Model`
+satisfies `tea.Model` just as well and the discipline is unchanged: `Update` is
+still the only method that mutates, `View` is still a pure read, and no
+goroutine holds the pointer — commands capture the `*client.Client` and the
+event channel, never the model.
+
+### D53. Connection state is polled once a second, not pushed
+`pkg/client` has no channel for state changes, only a `reconnected` system
+event on the way back up. Rather than add one, `poll` is a `tea.Cmd` on a 1s
+`tea.Tick` that reads `State()` and `Stats()` and returns a `linkMsg`. Two
+atomic loads a second costs nothing, the status bar is never more than a second
+stale, and the client keeps its channel-free public surface. `Stats.Attempt`
+was added for the "(attempt N)" part of the banner: the existing `Reconnects`
+counts successes, which is not what a banner wants to show.
+
+### D54. Sends are refused locally while the link is down
+`Update` checks `m.link` before returning a send command and writes an inline
+`error` event into the transcript instead. `Client.Send` would return
+`ErrNotConnected` anyway, but only after the command has been queued and the
+result has come back as a message; refusing up front means the failure appears
+under the line the user just typed, in the same place a server error would.
+
+### D55. Unread badges are written generically even though the server allows one room
+A client is in exactly one room, so events for another room only arrive in the
+window where a `/join` is in flight. The badge logic still increments
+`unread` for any `msg`/`privmsg` whose room is not the one being viewed, which
+is correct for that window and stays correct if the server ever fans out to
+more than one room. The alternative — special-casing the one room the protocol
+allows — would have to be undone the day that changes.
+
+### D56. No golden test through `teatest`
+The brief allowed `github.com/charmbracelet/x/exp/teatest` for a golden render
+test. It is not on CLAUDE.md's allowed-dependency list, and it buys nothing
+here: `View` is a pure function of the model, so
+`TestGoldenInitialRender` builds a model at 100x30, calls `View` directly,
+strips ANSI and compares to `testdata/initial.golden` (`-update` rewrites it).
+`TestChatThroughTheUI` covers what teatest would have added — the real
+bubbletea runtime, driven with `WithoutRenderer` and `WithInput(nil)`, sending
+real keystrokes to a real server while a second client watches.
+
+### D57. `internal/tui/doc.go` carries a package comment
+CLAUDE.md forbids comments in Go code, and the rule says it holds "unless the
+user says otherwise in the current session". The brief asked for a `doc.go`
+explaining the model/update/view split and the event bridging, so this one file
+has prose. Everything else in `internal/tui` is comment-free as usual.
