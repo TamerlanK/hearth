@@ -96,6 +96,12 @@ func (s *Server) Config() Config {
 	return s.cfg
 }
 
+func (s *Server) ActiveConnections() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
+}
+
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	ctx, cancel := context.WithCancel(ctx)
 
