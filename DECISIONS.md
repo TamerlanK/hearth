@@ -293,3 +293,43 @@ things a client legitimately wants. So the directory moved as one and the
 server imports it from its new path. The two client-side halves the server
 never needed, `EncodeCommand` and `DecodeEvent`, were added there rather than in
 the client so the wire format stays in one package.
+
+## 2026-09-10 — Client library
+
+### D43. `Say` and `PrivMsg` are unacknowledged; only four calls wait
+The server answers `join`, `nick`, `who` and `rooms` with a distinctive event,
+so those calls install a matcher and block for it. `say` has no reply of its
+own: the echo is a broadcast that anyone can match, and a rate-limited `say` is
+dropped with at most one warning per burst, so waiting for the echo would hang
+on exactly the failure it was meant to catch. Those two return once the line is
+written and their errors arrive on `Events()`. One request is in flight at a
+time, and any `error` event while it is pending fails it: the protocol has no
+correlation ids, and this is the honest amount of certainty. Documented in
+`docs/CLIENT.md`. Revisit if the protocol grows a request id.
+
+### D44. `ErrNotConnected` while reconnecting, not blocking
+A write during reconnect could block until the socket is back. It returns
+`ErrNotConnected` instead, because a caller who wants to wait can watch for the
+`reconnected` event, while a caller who cannot afford to block has no way to
+opt out of a blocking write. One more sentinel, no hidden queue.
+
+### D45. `Events()` drops the oldest event, from the reader goroutine
+The reader never blocks on the consumer. When the 256-slot buffer is full it
+receives one item itself before sending, and counts it in `Stats().Dropped`.
+Only the reader ever sends on the channel, so this receive-then-send cannot
+lose the new event to a concurrent producer, and the reader is also the only
+closer, so `push` after `close` cannot happen.
+
+### D46. The client's tests import `internal/server`
+CLAUDE.md says `pkg/client` must not import `internal/server`; the library
+does not. The external test package `client_test` does, because testing a
+client against the real server is worth more than a fake that agrees with the
+client by construction. Nothing outside the module can copy that import, so
+the public API is unaffected.
+
+### D47. No doc comments in `pkg/client`, per the repository rule
+The convention in CLAUDE.md forbids comments in Go code, which means `go doc`
+shows signatures only. The prose lives in `docs/CLIENT.md` and the two
+`Example` functions in `example_test.go`, which pkg.go.dev renders as runnable
+examples. Revisit if the package is published on its own and the rule is
+relaxed for exported identifiers.

@@ -148,3 +148,16 @@ Two pieces of state live outside the hub and are documented where they sit:
 `client.name` and `client.room` need no lock because only the hub goroutine ever touches them — see *Who owns a client's name* above.
 
 `client.enc`, `client.dec` and `client.seq` are single-writer by construction: the connection goroutine sets the codec during negotiation and writes the handshake events itself, then starts `writeLoop`, which is the only goroutine to touch `seq` afterwards. The `go` statement provides the happens-before edge. That is what makes `seq` monotonic per connection with no counter lock.
+
+## The client library
+
+`pkg/client` is the public library the CLI and the future TUI use; see
+`docs/CLIENT.md` for the user-facing contract. Inside, one reader goroutine
+owns the socket: it decodes JSON events, resolves the single pending request
+if the event matches (or is an error), and pushes every event onto a 256-slot
+channel, dropping the oldest when the consumer is behind. Writes go straight
+to the socket under no lock beyond the connection pointer's mutex, since each
+`EncodeCommand` is one `Write` of a complete line. Cancellation of a caller's
+context is turned into a socket deadline with `context.AfterFunc`, so no call
+blocks past its context. The same goroutine that reads also reconnects, so
+there is never more than one live socket.

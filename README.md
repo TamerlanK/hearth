@@ -17,6 +17,9 @@ Enter a name when prompted, then type. `/who` lists users, `/join <room>` moves
 rooms, `/msg <name> <text>` is private, `/quit` leaves, `/help` lists commands.
 Flags: `hearth serve --addr :4000 --max-clients 100 --idle-timeout 5m`.
 
+From Go, import `pkg/client` and chat in a dozen lines; see
+[docs/CLIENT.md](docs/CLIENT.md).
+
 Programs should speak the JSON encoding instead: send `HELLO hearth/1 json` as
 the first line and every line in both directions becomes one JSON object. See
 [docs/PROTOCOL.md](docs/PROTOCOL.md), which has a working Python client.
@@ -126,6 +129,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Protocol
 
 See [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+## Client library
+
+See [docs/CLIENT.md](docs/CLIENT.md).
 
 ## Development
 
