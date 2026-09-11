@@ -10,9 +10,30 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func Run(ctx context.Context, c *client.Client, addr, name string, bell bool) error {
-	m := newModel(c, addr, name, os.Getenv("NO_COLOR") == "")
-	m.bell = bell
+// Options configure the terminal UI.
+type Options struct {
+	Addr    string
+	Name    string
+	Bell    bool
+	LogFile string
+}
+
+// Run draws the chat client until the context is cancelled or the user quits.
+func Run(ctx context.Context, c *client.Client, opts Options) error {
+	m := newModel(c, opts.Addr, opts.Name, os.Getenv("NO_COLOR") == "")
+	m.bell = opts.Bell
+	if opts.LogFile != "" {
+		f, err := os.OpenFile(opts.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("open --log-file: %w", err)
+		}
+		defer func() {
+			if cerr := f.Close(); cerr != nil {
+				fmt.Fprintln(os.Stderr, "hearth: close log file:", cerr)
+			}
+		}()
+		m.journal = f
+	}
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil && !isCancelled(ctx, err) {
 		return fmt.Errorf("terminal ui: %w", err)

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -82,6 +83,7 @@ type Model struct {
 	current string
 	order   []string
 	rooms   map[string]*roomState
+	away    map[string]string
 	link    client.State
 	attempt uint64
 	focus   pane
@@ -89,6 +91,8 @@ type Model struct {
 	help    bool
 	bell    bool
 	lastErr string
+	find    search
+	journal io.Writer
 	follow  bool
 	pending bool
 	past    []string
@@ -116,6 +120,7 @@ func newModel(c *client.Client, addr, name string, color bool) *Model {
 		addr:   addr,
 		me:     name,
 		rooms:  map[string]*roomState{},
+		away:   map[string]string{},
 		asked:  map[protocol.Kind]bool{},
 		link:   client.Connected,
 		follow: true,
@@ -231,10 +236,17 @@ func (m *Model) resize(width, height int) {
 }
 
 func (m *Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.find.on {
+		next := m.searchKey(msg)
+		return m, next
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		stop := m.shutdown()
 		return m, stop
+	case "ctrl+f":
+		m.openSearch()
+		return m, nil
 	case "esc":
 		if m.help {
 			m.help = false
@@ -296,6 +308,30 @@ func (m *Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m *Model) searchKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c":
+		return m.shutdown()
+	case "esc", "ctrl+f":
+		m.closeSearch()
+	case "enter", "down", "ctrl+n":
+		m.stepSearch(1)
+	case "shift+enter", "up", "ctrl+p":
+		m.stepSearch(-1)
+	case "backspace":
+		m.backspaceSearch()
+	case "pgup":
+		m.body.PageUp()
+	case "pgdown":
+		m.body.PageDown()
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.typeSearch(string(msg.Runes))
+		}
+	}
+	return nil
 }
 
 func (m *Model) cycle(by int) {
@@ -541,6 +577,10 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 		if e.From == m.me {
 			m.me = e.To
 		}
+		if reason, ok := m.away[e.From]; ok {
+			delete(m.away, e.From)
+			m.away[e.To] = reason
+		}
 		m.rename(e.Room, e.From, e.To)
 	case protocol.System:
 		if e.Text == "reconnected" {
@@ -550,6 +590,12 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 		e.Text = "pong"
 	case protocol.Error:
 		m.lastErr = e.Text
+	case protocol.Away:
+		if e.Text == "" {
+			delete(m.away, e.From)
+		} else {
+			m.away[e.From] = e.Text
+		}
 	}
 	m.record(e)
 	if m.bell && m.mentioned(e) {
@@ -650,6 +696,7 @@ func (m *Model) enter(room, who string) {
 }
 
 func (m *Model) exit(room, who string) {
+	delete(m.away, who)
 	r := m.touch(room)
 	r.users = slices.DeleteFunc(r.users, func(n string) bool { return n == who })
 	r.members = max(0, r.members-1)
@@ -664,6 +711,7 @@ func (m *Model) rename(room, from, to string) {
 }
 
 func (m *Model) record(e protocol.Event) {
+	m.write(e)
 	room := e.Room
 	if e.Kind == protocol.PrivMsg {
 		room = dmTab(e, m.me)
@@ -687,8 +735,36 @@ func (m *Model) record(e protocol.Event) {
 	}
 }
 
+func (m *Model) highlighted() []string {
+	lines := m.transcript()
+	if !m.find.on || len(m.find.hits) == 0 {
+		return lines
+	}
+	for rank, at := range m.find.hits {
+		if at >= len(lines) {
+			continue
+		}
+		style := m.style.hit
+		if rank == m.find.at {
+			style = m.style.hitCurrent
+		}
+		lines[at] = style.Render(plainText(lines[at]))
+	}
+	return lines
+}
+
+func (m *Model) write(e protocol.Event) {
+	if m.journal == nil {
+		return
+	}
+	if err := (protocol.TextCodec{}).Encode(m.journal, e); err != nil {
+		m.journal = nil
+		m.fail("log file: " + err.Error())
+	}
+}
+
 func (m *Model) redraw() {
-	m.body.SetContent(strings.Join(m.transcript(), "\n"))
+	m.body.SetContent(strings.Join(m.highlighted(), "\n"))
 	if m.follow {
 		m.body.GotoBottom()
 		m.pending = false

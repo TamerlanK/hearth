@@ -13,6 +13,11 @@ type styles struct {
 	badge        lipgloss.Style
 	self         lipgloss.Style
 	user         lipgloss.Style
+	awayUser     lipgloss.Style
+	day          lipgloss.Style
+	hit          lipgloss.Style
+	hitCurrent   lipgloss.Style
+	searchKey    lipgloss.Style
 	clock        lipgloss.Style
 	text         lipgloss.Style
 	own          lipgloss.Style
@@ -60,10 +65,16 @@ func newStyles(color bool) styles {
 		return lipgloss.NewStyle().Foreground(c)
 	}
 	bar := lipgloss.NewStyle()
+	hit := lipgloss.NewStyle()
+	hitNow := lipgloss.NewStyle()
 	if color {
 		bar = bar.Foreground(barFg).Background(barBg)
+		hit = hit.Foreground(warn)
+		hitNow = hitNow.Foreground(barFg).Background(barBg).Bold(true)
 	} else {
 		bar = bar.Reverse(true)
+		hit = hit.Underline(true)
+		hitNow = hitNow.Reverse(true)
 	}
 	s := styles{
 		sidebarTitle: fg(muted).Bold(true),
@@ -72,6 +83,11 @@ func newStyles(color bool) styles {
 		badge:        fg(warn).Bold(true),
 		self:         fg(ok).Bold(true),
 		user:         fg(muted),
+		awayUser:     fg(dim).Italic(true),
+		day:          fg(dim).Bold(true),
+		hit:          hit,
+		hitCurrent:   hitNow,
+		searchKey:    fg(accent).Bold(true),
 		clock:        fg(dim),
 		text:         lipgloss.NewStyle(),
 		own:          fg(ok).Bold(true),

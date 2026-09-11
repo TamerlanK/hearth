@@ -21,6 +21,7 @@ func newConnectCmd() *cobra.Command {
 	var opts client.Options
 	var dial dialOpts
 	var plain, bell bool
+	var logFile string
 	cmd := &cobra.Command{
 		Use:   "connect [host:port]",
 		Short: "Join a chat server",
@@ -75,7 +76,7 @@ reconnects and is meant for pipes and scripts.`,
 			if plain {
 				return runPlain(ctx, c, cmd.InOrStdin(), cmd.OutOrStdout())
 			}
-			return tui.Run(ctx, c, addr, name, bell)
+			return tui.Run(ctx, c, tui.Options{Addr: addr, Name: name, Bell: bell, LogFile: logFile})
 		},
 	}
 	f := cmd.Flags()
@@ -84,6 +85,7 @@ reconnects and is meant for pipes and scripts.`,
 	f.BoolVar(&plain, "plain", false, "use the minimal line client on stdin/stdout instead of the terminal UI; good for scripts and debugging")
 	f.DurationVar(&opts.DialTimeout, "timeout", 10*time.Second, "time allowed to dial and complete the name handshake")
 	f.BoolVar(&bell, "bell", true, "ring the terminal bell when someone mentions you or sends you a private message")
+	f.StringVar(&logFile, "log-file", "", "append every line you see to this file, as plain text")
 	dial.bind(cmd)
 	return cmd
 }

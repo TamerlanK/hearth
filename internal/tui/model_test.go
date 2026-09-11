@@ -18,7 +18,12 @@ import (
 
 var update = flag.Bool("update", false, "rewrite the golden files")
 
-var at = time.Date(2026, 9, 10, 15, 4, 0, 0, time.UTC)
+var at = today(15, 4)
+
+func today(hour, minute int) time.Time {
+	y, m, d := time.Now().Date()
+	return time.Date(y, m, d, hour, minute, 0, 0, time.Local)
+}
 
 func fresh(t *testing.T, width, height int) *Model {
 	t.Helper()
@@ -595,5 +600,121 @@ func TestStatusBarShowsUnreadFocusAndTheLastError(t *testing.T) {
 	m = feed(t, m, event(protocol.Event{Kind: protocol.Join, Room: "#golang", From: "alice"}))
 	if got := bar(); !strings.Contains(got, "1 unread (1 @)") {
 		t.Errorf("status bar = %q, want only the DM left unread after viewing #golang", got)
+	}
+}
+
+func TestDaySeparators(t *testing.T) {
+	now := time.Now()
+	yesterday := now.AddDate(0, 0, -1)
+	old := now.AddDate(0, 0, -9)
+	m := feed(t, fresh(t, 100, 30),
+		event(protocol.Event{Kind: protocol.Join, Room: "#general", From: "alice", Time: old}),
+		event(protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "ancient", Time: old}),
+		event(protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "older still", Time: old.Add(time.Minute)}),
+		event(protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "recent", Time: yesterday}),
+		event(protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "fresh", Time: now}),
+	)
+	view := plain(m.View())
+	for _, want := range []string{old.Format(dayStamp), "Yesterday", "Today"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("transcript lacks the %q separator:\n%s", want, view)
+		}
+	}
+	if got := strings.Count(view, "Today"); got != 1 {
+		t.Errorf("Today appears %d times, want once", got)
+	}
+	if got := strings.Count(view, old.Format(dayStamp)); got != 1 {
+		t.Errorf("three events on the same day produced %d separators", got)
+	}
+	if got := strings.Count(view, "Yesterday"); got != 1 {
+		t.Errorf("Yesterday appears %d times, want once", got)
+	}
+}
+
+func TestDayLabel(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		at   time.Time
+		want string
+	}{
+		{"today", now, "Today"},
+		{"earlier today", now.Truncate(24 * time.Hour), "Today"},
+		{"yesterday", now.AddDate(0, 0, -1), "Yesterday"},
+		{"last week", now.AddDate(0, 0, -7), now.AddDate(0, 0, -7).Format(dayStamp)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dayLabel(tt.at); got != tt.want {
+				t.Errorf("dayLabel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAwayDimsTheSidebar(t *testing.T) {
+	m := joined(t, 100, 30)
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Away, Room: "#general", From: "bob", Text: "lunch"}))
+	if got := m.away["bob"]; got != "lunch" {
+		t.Fatalf("away[bob] = %q, want lunch", got)
+	}
+	view := plain(m.View())
+	if !strings.Contains(view, "bob (lunch)") {
+		t.Errorf("sidebar does not mark bob away:\n%s", view)
+	}
+	if !strings.Contains(view, "bob is away: lunch") {
+		t.Errorf("transcript does not narrate the away:\n%s", view)
+	}
+	if got := m.rooms["#general"].unread; got != 0 {
+		t.Errorf("an away event counted %d unread", got)
+	}
+
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Nick, Room: "#general", From: "bob", To: "bobby"}))
+	if _, still := m.away["bob"]; still {
+		t.Error("the away state stayed under the old name")
+	}
+	if got := m.away["bobby"]; got != "lunch" {
+		t.Errorf("away[bobby] = %q, want the state to follow the rename", got)
+	}
+
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Away, Room: "#general", From: "bobby"}))
+	if _, still := m.away["bobby"]; still {
+		t.Error("an empty away event did not clear the state")
+	}
+	if got := plain(m.View()); !strings.Contains(got, "bobby is back") {
+		t.Errorf("transcript does not narrate the return:\n%s", got)
+	}
+
+	m = feed(t, m,
+		event(protocol.Event{Kind: protocol.Away, Room: "#general", From: "bobby", Text: "afk"}),
+	)
+	if got := m.away["bobby"]; got != "afk" {
+		t.Fatalf("away[bobby] = %q, want afk", got)
+	}
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Leave, Room: "#general", From: "bobby"}))
+	if _, still := m.away["bobby"]; still {
+		t.Error("leaving did not drop the away state")
+	}
+}
+
+func TestLogFileGetsEveryLine(t *testing.T) {
+	var journal strings.Builder
+	m := joined(t, 100, 30)
+	m.journal = &journal
+	m = feed(t, m,
+		event(protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "written down"}),
+		event(protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "and this"}),
+	)
+	if m.journal == nil {
+		t.Fatal("a write error disabled the journal")
+	}
+	got := journal.String()
+	for _, want := range []string{"bob: written down", "bob -> alice: and this"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log file lacks %q:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "\n"); n != 2 {
+		t.Errorf("log file has %d lines, want 2", n)
 	}
 }

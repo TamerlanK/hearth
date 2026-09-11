@@ -1,15 +1,26 @@
 package tui
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/TamerlanK/hearth/pkg/client"
 	"github.com/TamerlanK/hearth/pkg/protocol"
 	"github.com/charmbracelet/lipgloss"
 )
 
-const clock = "15:04"
+const (
+	clock    = "15:04"
+	dayStamp = "Monday, 2 January 2006"
+)
+
+var escapes = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func plainText(s string) string {
+	return escapes.ReplaceAllString(s, "")
+}
 
 func (m *Model) View() string {
 	if m.view.tooSmall {
@@ -32,13 +43,53 @@ func (m *Model) transcript() []string {
 		return nil
 	}
 	var out []string
+	var day time.Time
 	for _, e := range r.log.Snapshot() {
+		if !e.Time.IsZero() && !sameDay(e.Time, day) {
+			day = e.Time
+			out = append(out, m.daybreak(day))
+		}
 		out = append(out, m.line(e)...)
 	}
 	for len(out) < m.view.log {
 		out = append([]string{""}, out...)
 	}
 	return out
+}
+
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
+}
+
+func (m *Model) daybreak(at time.Time) string {
+	label := " " + dayLabel(at) + " "
+	w := max(8, m.view.messages)
+	dashes := max(2, w-lipgloss.Width(label))
+	left := dashes / 2
+	return m.style.divider.Render(strings.Repeat("─", left)) +
+		m.style.day.Render(label) +
+		m.style.divider.Render(strings.Repeat("─", dashes-left))
+}
+
+func dayLabel(at time.Time) string {
+	switch daysApart(at, time.Now()) {
+	case 0:
+		return "Today"
+	case 1:
+		return "Yesterday"
+	default:
+		return at.Format(dayStamp)
+	}
+}
+
+func daysApart(a, b time.Time) int {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	first := time.Date(ay, am, ad, 0, 0, 0, 0, time.Local)
+	second := time.Date(by, bm, bd, 0, 0, 0, 0, time.Local)
+	return int(second.Sub(first).Hours() / 24)
 }
 
 func (m *Model) line(e protocol.Event) []string {
@@ -58,6 +109,12 @@ func (m *Model) line(e protocol.Event) []string {
 	}
 	if e.Kind == protocol.Rooms {
 		text = "rooms (" + strconv.Itoa(len(e.Names)) + "): " + strings.Join(e.Names, ", ")
+	}
+	if e.Kind == protocol.Away {
+		text = e.From + " is back"
+		if e.Text != "" {
+			text = e.From + " is away: " + e.Text
+		}
 	}
 	width := max(8, m.view.messages)
 	head := m.style.clock.Render("["+e.Time.Format(clock)+"] ") + style.Render(fit(who, nameCols)) + " "
@@ -152,6 +209,11 @@ func (m *Model) sidebar() string {
 		at := len(m.order)
 		for _, u := range r.users {
 			style := m.style.user
+			label := " " + m.label(u)
+			if reason, away := m.away[u]; away {
+				style = m.style.awayUser
+				label += " (" + reason + ")"
+			}
 			if u == m.me {
 				style = m.style.self
 			} else {
@@ -160,7 +222,7 @@ func (m *Model) sidebar() string {
 				}
 				at++
 			}
-			lines = append(lines, style.Render(fit(" "+m.label(u), w)))
+			lines = append(lines, style.Render(fit(label, w)))
 		}
 	}
 	for len(lines) < m.view.body {
@@ -197,7 +259,12 @@ func (m *Model) rule() string {
 }
 
 func (m *Model) entry() string {
-	return fit(m.input.View(), m.view.messages)
+	if !m.find.on {
+		return fit(m.input.View(), m.view.messages)
+	}
+	bar := m.style.searchKey.Render("find ") + m.find.query + m.style.prompt.Render("▌") +
+		m.style.system.Render("  "+m.find.summary())
+	return fit(bar, m.view.messages)
 }
 
 func (m *Model) statusBar() string {
@@ -217,13 +284,22 @@ func (m *Model) statusBar() string {
 	if m.lastErr != "" {
 		parts = append(parts, "! "+m.lastErr)
 	}
-	parts = append(parts, "focus: "+m.focus.String(), "?: help")
-	bar := " " + strings.Join(parts, " · ")
+	hints := []string{"focus: " + m.focus.String(), "^F: find", "?: help"}
 	style := m.style.status
 	if m.link != client.Connected || m.lastErr != "" {
 		style = m.style.statusAlert
 	}
-	return style.Render(fit(bar, m.view.width))
+	return style.Render(fit(statusLine(parts, hints, m.view.width), m.view.width))
+}
+
+func statusLine(parts, hints []string, width int) string {
+	for n := len(hints); n >= 0; n-- {
+		bar := " " + strings.Join(append(parts[:len(parts):len(parts)], hints[:n]...), " · ")
+		if lipgloss.Width(bar) <= width || n == 0 {
+			return bar
+		}
+	}
+	return " " + strings.Join(parts, " · ")
 }
 
 func (p pane) String() string {
@@ -266,6 +342,7 @@ var helpKeys = [][2]string{
 	{"Up / Down", "command history, scroll, or pick a room or user"},
 	{"Enter on a user", "open a private conversation (@name tab)"},
 	{"PgUp / PgDn", "scroll the transcript"},
+	{"Ctrl+F", "search the transcript"},
 	{"Ctrl+L", "clear the current room"},
 	{"? / F1", "toggle this help"},
 	{"Esc", "close this help"},
