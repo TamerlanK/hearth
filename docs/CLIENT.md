@@ -39,7 +39,9 @@ func main() {
 
 `Dial` connects, sends `HELLO hearth/1 json`, registers `Options.Name`, joins
 `Options.Room` if it is set, and returns once the server has confirmed the
-join. `Options.DialTimeout` (10s by default) covers all of that.
+join. `Options.DialTimeout` (10s by default) covers all of that. From then on
+the client pings the server whenever it has been quiet for `Options.KeepAlive`
+(30s by default; see *Keep-alive*).
 
 ## API at a glance
 
@@ -138,3 +140,13 @@ bounds the initial connection. Use `Close` to stop, from any goroutine.
 Without `Reconnect`, a dropped connection closes the client: `Events()` closes,
 `State()` is `Closed`, and every method returns `ErrClosed`. The server's
 `server shutting down` notice, when there is one, is the last event you see.
+
+## Keep-alive
+
+A hearth server disconnects a client that sends nothing for its
+`--idle-timeout` (5 minutes by default), however much it receives. The client
+sends a `ping` after `Options.KeepAlive` without a write of its own — 30 s
+when zero — and consumes the `pong`, so it never appears on `Events()`; a
+`pong` you asked for with `Send` still does. Keep it below the server's idle
+timeout. A negative value disables it, which is right for a client that is
+never quiet, such as a load generator.

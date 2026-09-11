@@ -19,13 +19,18 @@ const wait = 5 * time.Second
 
 func startServer(t *testing.T, addr string) (string, func()) {
 	t.Helper()
+	return startServerWith(t, addr, server.Config{HistorySize: 10})
+}
+
+func startServerWith(t *testing.T, addr string, cfg server.Config) (string, func()) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", addr)
 	if err != nil {
 		cancel()
 		t.Fatalf("listen %s: %v", addr, err)
 	}
-	cfg := server.Config{HistorySize: 10, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	done := make(chan error, 1)
 	go func() { done <- server.New(cfg).Serve(ctx, ln) }()
 	var once sync.Once
@@ -244,6 +249,53 @@ func TestReconnect(t *testing.T) {
 	}
 	if e := waitFor(t, c, "echo after reconnect", msgFrom("alice", "back again")); e.Room != "#ops" {
 		t.Errorf("room after reconnect = %q, want #ops", e.Room)
+	}
+}
+
+func TestKeepAliveOutlivesTheIdleTimeout(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	addr, _ := startServerWith(t, "127.0.0.1:0", server.Config{IdleTimeout: idle})
+	alice := dial(t, addr, client.Options{Name: "alice", KeepAlive: idle / 3})
+	bob := dial(t, addr, client.Options{Name: "bob", KeepAlive: idle / 3})
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+
+	time.Sleep(4 * idle)
+	if err := bob.Say(ctx, "still here"); err != nil {
+		t.Fatalf("say after the idle timeout: %v", err)
+	}
+	if got := alice.State(); got != client.Connected {
+		t.Fatalf("alice is %s after %v of silence, want connected", got, 4*idle)
+	}
+	for {
+		select {
+		case e, ok := <-alice.Events():
+			if !ok {
+				t.Fatal("alice's events closed: the server idled her out")
+			}
+			if e.Kind == protocol.Pong {
+				t.Fatal("a keep-alive pong leaked onto Events")
+			}
+			if msgFrom("bob", "still here")(e) {
+				goto delivered
+			}
+		case <-time.After(wait):
+			t.Fatal("bob's message never arrived")
+		}
+	}
+delivered:
+	if err := alice.Send(ctx, protocol.Command{Name: "ping"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, alice, "the pong to alice's own ping", func(e protocol.Event) bool { return e.Kind == protocol.Pong })
+}
+
+func TestKeepAliveOffLetsTheServerIdleOut(t *testing.T) {
+	addr, _ := startServerWith(t, "127.0.0.1:0", server.Config{IdleTimeout: 200 * time.Millisecond})
+	alice := dial(t, addr, client.Options{Name: "alice", KeepAlive: -1})
+	expectClosed(t, alice)
+	if got := alice.State(); got != client.Closed {
+		t.Errorf("state = %s, want closed", got)
 	}
 }
 

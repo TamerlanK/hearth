@@ -42,6 +42,7 @@ const (
 	defaultDialTimeout = 10 * time.Second
 	defaultBackoffMin  = 500 * time.Millisecond
 	defaultBackoffMax  = 30 * time.Second
+	defaultKeepAlive   = 30 * time.Second
 )
 
 // ServerError is an error event the server sent in reply to a request. It
@@ -124,6 +125,11 @@ type Options struct {
 	Reconnect bool
 	// Backoff bounds the reconnect delay; 500ms to 30s when zero.
 	Backoff BackoffConfig
+	// KeepAlive is the longest the connection may go without a write before
+	// the client sends a ping, so the server's idle timeout never fires. Zero
+	// means 30s; a negative value disables it. The pong that answers a
+	// keep-alive ping is consumed by the client and never appears on Events.
+	KeepAlive time.Duration
 }
 
 // RoomInfo is one entry from [Client.Rooms].
@@ -158,6 +164,8 @@ type Client struct {
 	dropped    atomic.Uint64
 	reconnects atomic.Uint64
 	attempt    atomic.Uint64
+	lastWrite  atomic.Int64
+	ownPongs   atomic.Int64
 
 	reqMu sync.Mutex
 
@@ -196,6 +204,9 @@ func Dial(ctx context.Context, addr string, opts Options) (*Client, error) {
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	if opts.KeepAlive == 0 {
+		opts.KeepAlive = defaultKeepAlive
 	}
 	c := &Client{
 		addr:   addr,
@@ -419,6 +430,9 @@ func (c *Client) write(ctx context.Context, conn net.Conn, cmd protocol.Command)
 		c.interruptWrite(conn)
 	})
 	err := protocol.EncodeCommand(conn, cmd)
+	if err == nil {
+		c.lastWrite.Store(time.Now().UnixNano())
+	}
 	if !stop() {
 		<-fired
 		if derr := conn.SetWriteDeadline(time.Time{}); derr != nil && !errors.Is(derr, net.ErrClosed) {
@@ -457,6 +471,8 @@ func (c *Client) connect(ctx context.Context) (net.Conn, error) {
 		}
 		return nil, err
 	}
+	c.ownPongs.Store(0)
+	c.lastWrite.Store(time.Now().UnixNano())
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -561,6 +577,7 @@ func (c *Client) run(conn net.Conn) {
 	defer close(c.done)
 	defer close(c.events)
 	defer c.state.Store(int32(Closed))
+	defer c.startKeepAlive()()
 	for {
 		err := c.readLoop(conn)
 		c.mu.Lock()
@@ -603,8 +620,69 @@ func (c *Client) readLoop(conn net.Conn) error {
 			c.log.Warn("bad line from server", "event", "client_error", "err", err)
 			continue
 		}
+		if e.Kind == protocol.Pong && c.consumeOwnPong() {
+			continue
+		}
 		c.resolve(e)
 		c.push(e)
+	}
+}
+
+func (c *Client) startKeepAlive() (stop func()) {
+	interval := c.opts.KeepAlive
+	if interval <= 0 {
+		return func() {}
+	}
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.keepAlive(interval, quit)
+	}()
+	return func() {
+		close(quit)
+		<-done
+	}
+}
+
+func (c *Client) keepAlive(interval time.Duration, quit <-chan struct{}) {
+	tick := time.NewTicker(interval / 2)
+	defer tick.Stop()
+	for {
+		select {
+		case <-quit:
+			return
+		case <-tick.C:
+		}
+		if time.Since(time.Unix(0, c.lastWrite.Load())) < interval/2 {
+			continue
+		}
+		c.mu.Lock()
+		conn := c.conn
+		c.mu.Unlock()
+		if conn == nil {
+			continue
+		}
+		c.ownPongs.Add(1)
+		ctx, cancel := context.WithTimeout(c.ctx, interval)
+		err := c.write(ctx, conn, protocol.Command{Name: "ping"})
+		cancel()
+		if err != nil {
+			c.ownPongs.Add(-1)
+			c.log.Debug("keep-alive ping failed", "event", "client_error", "err", err)
+		}
+	}
+}
+
+func (c *Client) consumeOwnPong() bool {
+	for {
+		n := c.ownPongs.Load()
+		if n <= 0 {
+			return false
+		}
+		if c.ownPongs.CompareAndSwap(n, n-1) {
+			return true
+		}
 	}
 }
 

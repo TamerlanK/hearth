@@ -133,7 +133,7 @@ func connectAll(ctx context.Context, o options, log *slog.Logger) ([]*participan
 			}
 			dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			c, err := client.Dial(dialCtx, o.addr, client.Options{Name: "load-" + strconv.Itoa(i), Room: room})
+			c, err := client.Dial(dialCtx, o.addr, client.Options{Name: "load-" + strconv.Itoa(i), Room: room, KeepAlive: -1})
 			if err != nil {
 				errs[i] = err
 				return
