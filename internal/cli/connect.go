@@ -21,9 +21,13 @@ func newConnectCmd() *cobra.Command {
 	var opts client.Options
 	var plain, bell bool
 	cmd := &cobra.Command{
-		Use:   "connect <host:port>",
+		Use:   "connect [host:port]",
 		Short: "Join a chat server",
 		Long: `Join a chat server as --name and start talking.
+
+The server and name of a successful connection are remembered (see --config),
+so the next time both can be left out. A name given on the command line or in
+HEARTH_NAME wins over the remembered one, which wins over your OS user name.
 
 The terminal UI opens by default and reconnects on its own if the server goes
 away. Type a line to send it to the room; lines starting with / are commands
@@ -33,11 +37,16 @@ away. Type a line to send it to the room; lines starting with / are commands
 reconnects and is meant for pipes and scripts.`,
 		Example: `  hearth connect localhost:4000 --name alice
   echo "hello from a script" | hearth connect localhost:4000 --plain --name bot`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if opts.Name == "" {
+			addr, name, err := resolveTarget(cmd, args, opts.Name)
+			if err != nil {
+				return err
+			}
+			if name == "" {
 				return errors.New("--name is required (or set HEARTH_NAME)")
 			}
+			opts.Name = name
 			if !plain {
 				if err := requireTerminal(); err != nil {
 					return err
@@ -47,7 +56,7 @@ reconnects and is meant for pipes and scripts.`,
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			c, err := client.Dial(ctx, args[0], opts)
+			c, err := client.Dial(ctx, addr, opts)
 			if err != nil {
 				return err
 			}
@@ -56,14 +65,17 @@ reconnects and is meant for pipes and scripts.`,
 					fmt.Fprintln(cmd.ErrOrStderr(), "hearth:", err)
 				}
 			}()
+			if err := saveRemembered(cmd, remembered{Addr: addr, Name: name}); err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "hearth: could not remember the server:", err)
+			}
 			if plain {
 				return runPlain(ctx, c, cmd.InOrStdin(), cmd.OutOrStdout())
 			}
-			return tui.Run(ctx, c, args[0], opts.Name, bell)
+			return tui.Run(ctx, c, addr, name, bell)
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&opts.Name, "name", os.Getenv("USER"), "display name, 1-20 characters without spaces")
+	f.StringVar(&opts.Name, "name", "", "display name, 1-20 characters without spaces; default is the remembered name, then your OS user name")
 	f.StringVar(&opts.Room, "room", "", "room to join right after connecting (default the server's default room)")
 	f.BoolVar(&plain, "plain", false, "use the minimal line client on stdin/stdout instead of the terminal UI; good for scripts and debugging")
 	f.DurationVar(&opts.DialTimeout, "timeout", 10*time.Second, "time allowed to dial and complete the name handshake")
@@ -86,7 +98,9 @@ func runPlain(ctx context.Context, c *client.Client, in io.Reader, out io.Writer
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 2)
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		var codec protocol.TextCodec
 		for e := range c.Events() {
 			if err := codec.Encode(out, e); err != nil {
@@ -112,13 +126,17 @@ func runPlain(ctx context.Context, c *client.Client, in io.Reader, out io.Writer
 		}
 		done <- sc.Err()
 	}()
+	var err error
 	select {
 	case <-ctx.Done():
-		return nil
-	case err := <-done:
-		if err == nil || errors.Is(err, client.ErrClosed) || ctx.Err() != nil {
-			return nil
-		}
-		return err
+	case err = <-done:
 	}
+	if cerr := c.Close(); cerr != nil {
+		err = errors.Join(err, cerr)
+	}
+	<-drained
+	if err == nil || errors.Is(err, client.ErrClosed) || ctx.Err() != nil {
+		return nil
+	}
+	return err
 }

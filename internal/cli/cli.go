@@ -52,12 +52,15 @@ the environment, and the environment wins over the built-in default.`,
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return fmt.Errorf("%w\n\n%s", err, strings.TrimRight(cmd.UsageString(), "\n"))
 	})
+	root.PersistentFlags().String("config", "", "file that remembers the last server and name; default is hearth/config.json under the user config dir")
 	serve, _ := newServeCmd()
 	root.AddCommand(serve, newConnectCmd(), newVersionCmd())
+	annotate := func(f *pflag.Flag) {
+		f.Usage += " (env: " + envName(f.Name) + ")"
+	}
+	root.PersistentFlags().VisitAll(annotate)
 	for _, sub := range root.Commands() {
-		sub.Flags().VisitAll(func(f *pflag.Flag) {
-			f.Usage += " (env: " + envName(f.Name) + ")"
-		})
+		sub.Flags().VisitAll(annotate)
 	}
 	return root
 }

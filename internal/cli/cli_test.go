@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strings"
@@ -402,5 +405,102 @@ func TestServeRunsAndShutsDown(t *testing.T) {
 		}
 	case <-time.After(wait):
 		t.Fatal("serve did not exit after cancel")
+	}
+}
+
+func startTestServer(t *testing.T) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := server.New(server.Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("serve: %v", err)
+			}
+		case <-time.After(wait):
+			t.Error("server did not stop")
+		}
+	})
+	return ln.Addr().String()
+}
+
+func runCLI(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	var out bytes.Buffer
+	root := newRootCmd()
+	root.SetIn(strings.NewReader(stdin))
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs(args)
+	err := root.ExecuteContext(ctx)
+	return out.String(), err
+}
+
+func TestConnectRemembersTheServerAndName(t *testing.T) {
+	addr := startTestServer(t)
+	cfg := filepath.Join(t.TempDir(), "nested", "config.json")
+
+	_, err := runCLI(t, "", "--config", cfg, "connect", "--plain")
+	if !errors.Is(err, errNoServer) {
+		t.Fatalf("connect with nothing remembered: %v, want errNoServer", err)
+	}
+
+	out, err := runCLI(t, "", "--config", cfg, "connect", addr, "--plain", "--name", "alice")
+	if err != nil || !strings.Contains(out, "alice joined #general") {
+		t.Fatalf("first connect: err = %v, output = %q", err, out)
+	}
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	var saved remembered
+	if err := json.Unmarshal(b, &saved); err != nil || saved != (remembered{Addr: addr, Name: "alice"}) {
+		t.Fatalf("config = %s (%v), want addr %s and name alice", b, err, addr)
+	}
+
+	out, err = runCLI(t, "", "--config", cfg, "connect", "--plain")
+	if err != nil || !strings.Contains(out, "alice joined #general") {
+		t.Fatalf("connect from memory: err = %v, output = %q", err, out)
+	}
+
+	out, err = runCLI(t, "", "--config", cfg, "connect", "--plain", "--name", "bob")
+	if err != nil || !strings.Contains(out, "bob joined #general") {
+		t.Fatalf("connect with an explicit name: err = %v, output = %q", err, out)
+	}
+	b, err = os.ReadFile(cfg)
+	if err != nil || !strings.Contains(string(b), `"name": "bob"`) {
+		t.Errorf("config after the second connect = %s (%v), want bob remembered", b, err)
+	}
+
+	t.Setenv("HEARTH_CONFIG", cfg)
+	out, err = runCLI(t, "", "connect", "--plain")
+	if err != nil || !strings.Contains(out, "bob joined #general") {
+		t.Fatalf("connect via HEARTH_CONFIG: err = %v, output = %q", err, out)
+	}
+}
+
+func TestResolveTargetFallsBackToTheOSUser(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	root := newRootCmd()
+	root.SetArgs([]string{"--config", cfg, "version"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	addr, name, err := resolveTarget(root, []string{"h:1"}, "")
+	if err != nil || addr != "h:1" || name != osUserName() {
+		t.Errorf("resolveTarget = %q, %q, %v; want h:1 and the OS user", addr, name, err)
+	}
+	if _, got, _ := resolveTarget(root, []string{"h:1"}, "carol"); got != "carol" {
+		t.Errorf("an explicit name resolved to %q", got)
 	}
 }
