@@ -631,3 +631,57 @@ was just written; the echo is the only acknowledgement `hearth/1` has, and
 it makes exit status 0 mean accepted. The first argument is the address only
 if it parses as `host:port`, so `hearth send hello` with a remembered server
 does the obvious thing.
+
+## 2026-09-11 — Transport security and presence
+
+### D80. TLS wraps the listener in `internal/cli`, not in `internal/server`
+`server.Serve` takes a `net.Listener`, so TLS is `tls.NewListener` around the
+one the command already opened and the server package never learns about it.
+That keeps the accept loop, the handshake and every test working on plain
+`net.Pipe` and `127.0.0.1:0` listeners, and it means a future operator can put
+the same binary behind a proxy instead without a code path of its own. The
+client side is symmetric: `client.Options.TLS` is a `*tls.Config`, nil for
+plaintext, so callers get the whole standard configuration surface with no
+wrapper type to learn and no dependency added.
+
+### D81. The token rides the negotiation line, and text clients are prompted
+There is one moment in `hearth/1` where a client can say something before it
+is trusted, and that is the first line. A JSON client appends ` token=…` to
+the `HELLO`, which is additive: an old server treats the whole line as a name
+and rejects it, and a server with no token ignores the field. Telnet has no
+such line, so a token-requiring server asks for the token *before* the name
+prompt and takes the answer as a bare line, which keeps the "anything else is
+the name" fallback intact one step later. A wrong token gets one `bad token`
+error and the socket closes with no retry: guessing then costs a full
+reconnect and is already bounded by `--max-per-ip`. The comparison is
+`subtle.ConstantTimeCompare`. The refusal is written *after* the encoding
+switch, so a JSON client can parse the error it is refused with.
+
+### D82. `/away` is a broadcast plus a `who` rider, not stored presence
+Away is per-connection state on the client struct, owned by the hub like the
+name and the room. Setting it broadcasts an `away` event to the room so
+everyone watching updates immediately, and saying anything clears it, which
+is what every chat client has done since IRC. The problem is a client that
+arrives later and missed the broadcast: rather than add a presence query, the
+`who` reply is followed by one `away` event per away member, so the periodic
+refresh the TUI already runs is also the presence sync. A new event kind is
+additive and a client that does not know it can ignore it.
+
+### D83. Search is a filter over the rendered transcript
+`Ctrl+F` matches against the lines `transcript()` already produces, not the
+events behind them, so what you search is exactly what you see: the rendered
+join notices, the `you` label, wrapped continuations. Hits are line indices,
+which is what the viewport scrolls by, so jumping to one is a `SetYOffset`
+and needs no second coordinate system. The cost is that a match spanning a
+wrap boundary is not found; the benefit is that the whole feature is a
+`strings.Contains` over a slice the view recomputes anyway, with no index to
+invalidate when an event arrives mid-search.
+
+### D84. The day separator is relative for two days and absolute after
+`Today` and `Yesterday` are what a reader wants for recent traffic and are
+unambiguous; anything older gets the full weekday and date, because "3 days
+ago" forces arithmetic the reader should not have to do. The separator is
+emitted when consecutive events in the ring differ in calendar day, so
+out-of-order timestamps (a history replay after live traffic) produce a
+second separator rather than being silently merged, which is honest about
+what the transcript actually contains.

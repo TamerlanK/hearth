@@ -29,7 +29,7 @@ for the life of the connection.
 client                                   server
   |  <-- connect                            |
   |  <---------------- one text line: the name prompt
-  |  ---- "HELLO hearth/1 json" ----------> |     (optional)
+  |  ---- "HELLO hearth/1 json[ token=…]" > |     (optional)
   |  <---------------- {"kind":"system","text":"protocol json", ...}
   |  ---- {"cmd":"nick","args":["alice"]} > |
   |  <---------------- {"kind":"join", ...} |
@@ -49,8 +49,9 @@ client                                   server
 
 2. The server inspects the **first line the client sends**.
 
-   - If it is exactly `HELLO hearth/1 json`, the connection switches to the
-     JSON encoding for both directions and the server replies with
+   - If it is `HELLO hearth/1 json`, optionally followed by ` token=<token>`,
+     the connection switches to the JSON encoding for both directions and the
+     server replies with
 
      ```json
      {"kind":"system","text":"protocol json","time":"2026-09-09T15:04:05Z","seq":2}
@@ -58,10 +59,29 @@ client                                   server
 
      The client then supplies its name with a `nick` command.
 
-   - **Anything else** is treated as the name reply in text encoding. This is
-     what telnet does, and it is why existing clients keep working.
+   - **Anything else** is treated as the name reply in text encoding (or, on a
+     server that requires a token, as the token). This is what telnet does, and
+     it is why existing clients keep working.
 
-3. Naming: the name must be 1–20 printable characters with no whitespace, and
+3. Authentication, **only when the operator set a token**. A server with no
+   token skips this step entirely and ignores any `token=` it is sent.
+
+   - A JSON client puts the token in the negotiation line:
+     `HELLO hearth/1 json token=s3cret`.
+   - A text client is prompted for it *before* the name prompt:
+
+     ```
+     * This server requires a token. Enter it:
+     ```
+
+     and answers with the token as a bare line.
+
+   A wrong or missing token gets one `error` event, `bad token`, and the
+   connection is closed. There is no retry: reconnect to try again. The
+   comparison is constant-time. The token protects nothing on its own over
+   plaintext TCP — a server that requires one should also be behind TLS.
+
+4. Naming: the name must be 1–20 printable characters with no whitespace, and
    unique across the server. A rejected name gets an `error` event and another
    attempt; the connection stays in the naming state until a name is accepted.
    Accepted commands while naming are `say` (in text: a bare line) and `nick`.
@@ -69,12 +89,16 @@ client                                   server
    10 seconds**, however many name attempts it takes, or the connection is
    closed without a message. The idle timeout applies only afterwards.
 
-4. Once named, the client is in the default room `#general` and every command
+5. Once named, the client is in the default room `#general` and every command
    below is available.
 
 There is no other handshake, no version list and no capability exchange. A
 server that does not understand `HELLO hearth/1 json` will treat it as a name,
 which is the intended fallback.
+
+**TLS** is transport only and changes nothing above: a server started with a
+certificate speaks the same protocol inside a TLS session, on the same port.
+A client either dials TLS or it does not; there is no in-band upgrade.
 
 If the server is at capacity it sends one line and closes, before the prompt:
 
@@ -103,6 +127,7 @@ and `text` (optional string). Unknown fields are ignored.
 | `who` | `[room]` | — | `/who` or `/who golang` | `{"cmd":"who","args":["golang"]}` |
 | `rooms` | — | — | `/rooms` | `{"cmd":"rooms"}` |
 | `history` | `[room]` | — | `/history` | `{"cmd":"history"}` |
+| `away` | — | the reason | `/away lunch` or `/away` to return | `{"cmd":"away","text":"lunch"}` |
 | `ping` | — | — | `/ping` | `{"cmd":"ping"}` |
 | `quit` | — | — | `/quit` | `{"cmd":"quit"}` |
 | `help` | — | — | `/help` | `{"cmd":"help"}` |
@@ -167,6 +192,7 @@ The examples below use `Z` for brevity.
 |------|-------------|---------|----------------|
 | `msg` | `room` `from` `text` | Room message | `[15:04] alice: hello everyone` |
 | `privmsg` | `from` `to` `text` | Private message; sent to both parties | `[15:04] alice -> bob: are you there` |
+| `away` | `room` `from` `text` | Someone's presence changed; empty `text` means they are back | `* bob is away: lunch` |
 | `system` | `text` | Notice from the server | `* protocol json` |
 | `join` | `room` `from` | Someone entered a room, including yourself | `* bob joined #general` |
 | `leave` | `room` `from` | Someone left a room, including on disconnect | `* bob left #general` |
@@ -242,6 +268,7 @@ and may try again.
 | Name rejected while naming | `name is empty, try again:`, `name is longer than 20 characters, try again:`, `name must be printable with no spaces, try again:`, `expected a name, try again:` (a JSON command other than `nick` or `say` while naming) | stays open |
 | Name already in use | `name taken, try another:` (naming) / `name taken` (`nick`) | stays open |
 | Unknown recipient for `msg` | `no such user bob` | stays open |
+| Wrong or missing token | `bad token` | **closed** (during the handshake) |
 | Bad room name | `room name must be 1-24 characters of a-z, 0-9 or -` | stays open |
 | Already in the requested room | `already in #general` | stays open |
 | `join` would exceed the room cap | `too many rooms, limit is 64` | stays open |

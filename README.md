@@ -30,6 +30,9 @@ and the profile that says where the rest of the time goes is in the repo.
 - **Hardened by default.** Per-client rate limit checked before decoding, a
   per-address connection cap, line and message caps, handshake and idle
   timeouts, control characters stripped, panics contained to one connection.
+- **TLS and a shared secret.** `--tls-cert`/`--tls-key` for transport,
+  `--token` for a constant-time checked secret that telnet and JSON clients
+  both supply.
 - **A terminal UI** with rooms and members, private conversations as
   `@name` tabs, tab-completion, mention highlighting with a bell, unread and
   mention badges, command history, a help overlay and automatic reconnect;
@@ -90,6 +93,8 @@ hearth serve --addr :4000 --metrics-addr 127.0.0.1:9090 --log-format json
 | `--rate`, `--burst` | `5`, `10` | Sustained lines per second per client, and the burst above it |
 | `--max-drops` | `100` | Consecutive dropped events before a client is disconnected |
 | `--motd` | *(none)* | Message of the day sent to each client after it joins; newlines make several lines |
+| `--token` | *(none)* | Require this secret from every client; prefer `HEARTH_TOKEN` over the command line |
+| `--tls-cert`, `--tls-key` | *(off)* | PEM certificate and key; given together, the listener speaks TLS |
 
 Every flag reads `HEARTH_<FLAG>` from the environment when not given on the
 command line; `hearth serve --help` names the variable next to each flag.
@@ -122,6 +127,10 @@ contains your name as a word, or any private message, is a mention: the line
 is highlighted, the badge shows `@` instead of `•`, and the terminal bell
 rings (`--bell=false` to silence it).
 
+Against a server with TLS or a token, add `--tls` (plus `--tls-ca ca.pem`, or
+`--tls-insecure` for a self-signed certificate you trust) and `--token`
+(or `HEARTH_TOKEN`). `--log-file chat.log` keeps your own transcript.
+
 `--plain` is a stdin/stdout line client with no UI and no reconnect, for
 scripts:
 
@@ -142,23 +151,29 @@ a completion script.
 | `Ctrl+N` / `Ctrl+P` | Join the next / previous room |
 | `Up` / `Down` | Command history in the input; scroll the transcript; pick a room |
 | `PgUp` / `PgDn` | Scroll the transcript |
+| `Ctrl+F` | Search the transcript; Enter and the arrows walk the matches, Esc closes |
 | `Ctrl+L` | Clear the current room's transcript |
 | `?` / `F1` | Toggle the help overlay (`?` outside the input) |
 | `Esc` | Close the help overlay |
 | `Ctrl+C` | Close the client and quit |
 
 Commands: `/say`, `/msg <name> <text>`, `/join <room>`, `/nick <name>`,
-`/who [room]`, `/rooms`, `/history [room]`, `/ping`, `/quit`, `/help`, and
-`/close` for a `@name` tab. A bare line is `/say`, or a private message inside
+`/who [room]`, `/rooms`, `/history [room]`, `/away [reason]`, `/ping`,
+`/quit`, `/help`, and `/close` for a `@name` tab. A bare line is `/say`, or a private message inside
 a `@name` tab.
 
-### send, who, rooms
+### send, tail, who, rooms
 
 ```sh
 hearth send [host:4000] [--room ops] [--to bob] "text"     # or one message per stdin line
+hearth tail [host:4000] [--room ops] [--json]              # follow a room until interrupted
 hearth who  [host:4000] [--room ops] [--json]
 hearth rooms [host:4000] [--json]
 ```
+
+`tail` is the read side: it prints every event in a room and keeps going, so
+`hearth tail --room alerts | while read -r line; do notify-send "$line"; done`
+is a bridge in one line. `--json` emits the server's objects for `jq`.
 
 `send` connects, says the text, waits for the server to echo it back and
 exits: status 0 means the server accepted it. With no text it sends every line
@@ -254,7 +269,8 @@ docker compose up        # chat on :4000, Prometheus UI on http://localhost:9090
   private interface: it is unauthenticated.
 - **Shutdown**: SIGINT/SIGTERM, every client gets `* server shutting down`,
   5 s drain, exit 1 if it times out.
-- **Security**: no auth, no TLS yet. Read [SECURITY.md](SECURITY.md) before
+- **Security**: TLS and a shared-secret token are opt-in and off by default;
+  there are still no accounts. Read [SECURITY.md](SECURITY.md) before
   exposing it.
 
 ## Benchmarks
@@ -299,11 +315,10 @@ and pushes the image. How to get a change in is
 
 1. Batch writes and encode once per broadcast (the profile says two thirds of
    server CPU).
-2. TLS on the listener and a shared-secret token inside the `HELLO` line.
-3. Coalesce join notices in large rooms, so connect storms are linear.
-4. Request ids in `hearth/2` so the client can run concurrent requests.
-5. Append-only history persistence per room.
-6. Live room-list updates and multi-room membership in the UI.
+2. Coalesce join notices in large rooms, so connect storms are linear.
+3. Request ids in `hearth/2` so the client can run concurrent requests.
+4. Append-only history persistence per room.
+5. Membership in several rooms at once, rather than one at a time.
 
 ## License
 

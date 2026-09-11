@@ -9,6 +9,21 @@ the release workflow groups a GitHub Release's notes by.
 
 ### Added
 
+- **Security**: `serve --tls-cert`/`--tls-key` serve TLS on the chat listener,
+  and `serve --token` requires a shared secret from every client, compared in
+  constant time. JSON clients send it as `HELLO hearth/1 json token=…`; text
+  clients are prompted for it before the name. `connect`, `send`, `tail`,
+  `who` and `rooms` gain `--tls`, `--tls-ca`, `--tls-insecure` and `--token`;
+  `pkg/client` gains `Options.TLS` and `Options.Token`.
+- **Presence**: `/away [reason]` marks you away and clears when you speak. The
+  TUI dims away users in the sidebar and shows the reason; a `who` reply is
+  followed by one `away` event per away member.
+- **TUI**: `Ctrl+F` searches the current transcript, walks the matches with
+  Enter and the arrows, and scrolls the current one into view.
+- **TUI**: the transcript is split by day with a Today / Yesterday / full-date
+  separator.
+- **TUI**: `connect --log-file` appends every line you see to a file.
+- **CLI**: `hearth tail` follows a room on stdout, as lines or `--json`.
 - **TUI**: private conversations are `@name` tabs with their own transcript
   and badge; a bare line in one is a private message, `/close` removes it,
   and Enter on a user in the sidebar opens one.
