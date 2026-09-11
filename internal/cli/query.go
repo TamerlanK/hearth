@@ -22,25 +22,29 @@ import (
 var errNoEcho = errors.New("the server closed the connection before confirming the message")
 
 type queryOpts struct {
-	name    string
-	room    string
-	timeout time.Duration
-	asJSON  bool
-	dial    dialOpts
+	name      string
+	room      string
+	timeout   time.Duration
+	asJSON    bool
+	reconnect bool
+	dial      dialOpts
 }
 
-func (o *queryOpts) bind(cmd *cobra.Command, room bool, timeout time.Duration) {
+func (o *queryOpts) bind(cmd *cobra.Command, room bool, timeout time.Duration, timeoutUsage string) {
 	f := cmd.Flags()
 	f.StringVar(&o.name, "name", "", "name to connect as; default is the remembered name, then your OS user name")
-	usage := "time allowed for the whole command"
-	if timeout == 0 {
-		usage = "stop after this long; 0 follows until interrupted"
-	}
-	f.DurationVar(&o.timeout, "timeout", timeout, usage)
+	f.DurationVar(&o.timeout, "timeout", timeout, timeoutUsage)
 	if room {
 		f.StringVar(&o.room, "room", "", "room to act in (default the server's default room)")
 	}
 	o.dial.bind(cmd)
+}
+
+func (o *queryOpts) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	if o.timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, o.timeout)
 }
 
 func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context, context.CancelFunc, *client.Client, []string, error) {
@@ -51,18 +55,13 @@ func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context,
 	if name == "" {
 		return nil, nil, nil, nil, errors.New("--name is required (or set HEARTH_NAME)")
 	}
-	opts := client.Options{Name: name, Room: o.room, DialTimeout: dialTimeout(o.timeout)}
+	opts := client.Options{Name: name, Room: o.room, DialTimeout: dialTimeout(o.timeout), Reconnect: o.reconnect}
 	if err := o.dial.apply(&opts); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-	cancel := func() {}
-	if o.timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, o.timeout)
-	}
 	c, err := client.Dial(ctx, addr, opts)
 	if err != nil {
-		cancel()
 		stop()
 		if errors.Is(err, client.ErrNameTaken) {
 			return nil, nil, nil, nil, fmt.Errorf("%w: %q is in use on %s, pass --name", err, name, addr)
@@ -73,7 +72,7 @@ func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context,
 	if len(addrArg(args)) == 1 {
 		rest = args[1:]
 	}
-	return ctx, func() { cancel(); stop() }, c, rest, nil
+	return ctx, stop, c, rest, nil
 }
 
 func addrArg(args []string) []string {
@@ -97,8 +96,11 @@ func newSendCmd() *cobra.Command {
 		Long: `Connect, say the text, wait for the server to echo it back, disconnect.
 
 The text is the remaining arguments joined by spaces; with none, every line
-of standard input is sent as its own message. The exit status is 0 only once
-the server has accepted each message. Meant for cron jobs, CI and scripts.`,
+of standard input is sent as its own message, for as long as stdin stays open.
+The exit status is 0 only once the server has accepted each message; --timeout
+bounds the connection and each confirmation, not the stream. Meant for cron
+jobs, CI and scripts. The server's rate limit applies: a burst above it fails
+with "rate limited".`,
 		Example: `  hearth send chat.example.com:4000 --room ops "deploy finished"
   hearth send --to alice "your build is green"
   tail -f app.log | grep ERROR | hearth send --name logbot --room alerts`,
@@ -110,13 +112,13 @@ the server has accepted each message. Meant for cron jobs, CI and scripts.`,
 			defer stop()
 			defer closeQuietly(cmd, c)
 			if len(rest) > 0 {
-				return deliver(ctx, c, to, strings.Join(rest, " "))
+				return o.deliver(ctx, c, to, strings.Join(rest, " "))
 			}
 			sc := bufio.NewScanner(cmd.InOrStdin())
 			sc.Buffer(make([]byte, protocol.MaxLineBytes), protocol.MaxLineBytes)
 			for sc.Scan() {
 				if line := strings.TrimSpace(sc.Text()); line != "" {
-					if err := deliver(ctx, c, to, line); err != nil {
+					if err := o.deliver(ctx, c, to, line); err != nil {
 						return err
 					}
 				}
@@ -127,9 +129,15 @@ the server has accepted each message. Meant for cron jobs, CI and scripts.`,
 			return nil
 		},
 	}
-	o.bind(cmd, true, 10*time.Second)
+	o.bind(cmd, true, 10*time.Second, "time allowed to connect, and then for the server to confirm each message")
 	cmd.Flags().StringVar(&to, "to", "", "send a private message to this user instead of to the room")
 	return cmd
+}
+
+func (o *queryOpts) deliver(ctx context.Context, c *client.Client, to, text string) error {
+	ctx, cancel := o.bound(ctx)
+	defer cancel()
+	return deliver(ctx, c, to, text)
 }
 
 func deliver(ctx context.Context, c *client.Client, to, text string) error {
@@ -177,6 +185,8 @@ func newWhoCmd() *cobra.Command {
 			}
 			defer stop()
 			defer closeQuietly(cmd, c)
+			ctx, cancel := o.bound(ctx)
+			defer cancel()
 			names, err := c.Who(ctx)
 			if err != nil {
 				return err
@@ -195,7 +205,7 @@ func newWhoCmd() *cobra.Command {
 			return nil
 		},
 	}
-	o.bind(cmd, true, 10*time.Second)
+	o.bind(cmd, true, 10*time.Second, "time allowed to connect and get the answer")
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "print a JSON object instead of one name per line")
 	return cmd
 }
@@ -214,6 +224,8 @@ func newRoomsCmd() *cobra.Command {
 			}
 			defer stop()
 			defer closeQuietly(cmd, c)
+			ctx, cancel := o.bound(ctx)
+			defer cancel()
 			rooms, err := c.Rooms(ctx)
 			if err != nil {
 				return err
@@ -233,13 +245,13 @@ func newRoomsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	o.bind(cmd, false, 10*time.Second)
+	o.bind(cmd, false, 10*time.Second, "time allowed to connect and get the answer")
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "print a JSON array instead of one room per line")
 	return cmd
 }
 
 func newTailCmd() *cobra.Command {
-	var o queryOpts
+	o := queryOpts{reconnect: true}
 	var raw bool
 	cmd := &cobra.Command{
 		Use:   "tail [host:port]",
@@ -247,8 +259,11 @@ func newTailCmd() *cobra.Command {
 		Long: `Print everything happening in a room, one line at a time, and keep going.
 
 The read-side counterpart to hearth send: pipe it into grep, tee it to a file,
-or run it under a supervisor as a bridge. Ctrl+C or SIGTERM stops it. Unlike
-connect --plain it never reads stdin, so it is safe in a pipeline.`,
+or run it under a supervisor as a bridge. It starts from now rather than
+replaying the room's history, prints only that room plus what is addressed to
+it, pings the server so an idle timeout never ends it (--keepalive), and
+reconnects with backoff if the server goes away. Ctrl+C or SIGTERM stops it.
+Unlike connect --plain it never reads stdin, so it is safe in a pipeline.`,
 		Example: `  hearth tail chat.example.com:4000 --room ops
   hearth tail --json | jq -r 'select(.kind=="msg") | .text'`,
 		Args: cobra.MaximumNArgs(1),
@@ -259,10 +274,12 @@ connect --plain it never reads stdin, so it is safe in a pipeline.`,
 			}
 			defer stop()
 			defer closeQuietly(cmd, c)
+			ctx, cancel := o.bound(ctx)
+			defer cancel()
 			return follow(ctx, c, cmd.OutOrStdout(), raw)
 		},
 	}
-	o.bind(cmd, true, 0)
+	o.bind(cmd, true, 0, "stop after this long; 0 follows until interrupted")
 	cmd.Flags().BoolVar(&raw, "json", false, "print each event as the JSON object the server sent instead of a readable line")
 	return cmd
 }
@@ -275,6 +292,9 @@ func follow(ctx context.Context, c *client.Client, out io.Writer, raw bool) erro
 			if !ok {
 				return nil
 			}
+			if !shows(e, c.Room()) {
+				continue
+			}
 			if err := emit(out, codec, e, raw); err != nil {
 				return err
 			}
@@ -282,6 +302,10 @@ func follow(ctx context.Context, c *client.Client, out io.Writer, raw bool) erro
 			return nil
 		}
 	}
+}
+
+func shows(e protocol.Event, room string) bool {
+	return e.Kind != protocol.History && (e.Room == "" || e.Room == room)
 }
 
 func emit(out io.Writer, codec protocol.TextCodec, e protocol.Event, raw bool) error {

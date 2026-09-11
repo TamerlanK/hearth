@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -420,12 +421,18 @@ func TestServeRunsAndShutsDown(t *testing.T) {
 
 func startTestServer(t *testing.T) string {
 	t.Helper()
+	return startTestServerWith(t, server.Config{})
+}
+
+func startTestServerWith(t *testing.T, cfg server.Config) string {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	srv := server.New(server.Config{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx, ln) }()
 	t.Cleanup(func() {
@@ -922,6 +929,188 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s", what)
 		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func nextKind(t *testing.T, c *client.Client, kind protocol.Kind) protocol.Event {
+	t.Helper()
+	for {
+		select {
+		case e, ok := <-c.Events():
+			if !ok {
+				t.Fatalf("%s's event stream closed", c.Name())
+			}
+			if e.Kind == kind {
+				return e
+			}
+		case <-time.After(wait):
+			t.Fatalf("%s got no %s event", c.Name(), kind)
+		}
+	}
+}
+
+func TestSendStreamsStdinPastTheTimeout(t *testing.T) {
+	const timeout = 500 * time.Millisecond
+	addr := startTestServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*wait)
+	defer cancel()
+	bob, err := client.Dial(ctx, addr, client.Options{Name: "bob", DialTimeout: wait})
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bob.Close()
+
+	pr, pw := io.Pipe()
+	root := newRootCmd()
+	root.SetIn(pr)
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--config", cfg, "send", addr, "--name", "ci", "--timeout", timeout.String()})
+	done := make(chan error, 1)
+	go func() { done <- root.ExecuteContext(ctx) }()
+
+	for _, line := range []string{"one", "two", "three"} {
+		if _, err := io.WriteString(pw, line+"\n"); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+		if e := nextKind(t, bob, protocol.Msg); e.From != "ci" || e.Text != line {
+			t.Fatalf("bob saw %+v, want %q from ci", e, line)
+		}
+		time.Sleep(2 * timeout)
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("send with a quiet stdin longer than --timeout: %v", err)
+		}
+	case <-time.After(wait):
+		t.Fatal("send did not exit after stdin closed")
+	}
+}
+
+func TestTailOutlivesTheIdleTimeout(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	addr := startTestServerWith(t, server.Config{IdleTimeout: idle})
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*wait)
+	defer cancel()
+	bob, err := client.Dial(ctx, addr, client.Options{Name: "bob", Room: "ops", DialTimeout: wait, KeepAlive: idle / 3})
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bob.Close()
+
+	tests := []struct {
+		name      string
+		keepalive string
+		settle    func(t *testing.T, out *safeBuffer)
+		check     func(t *testing.T, out string)
+	}{
+		{
+			name:      "keepalive holds the connection",
+			keepalive: (idle / 3).String(),
+			settle:    func(*testing.T, *safeBuffer) { time.Sleep(4 * idle) },
+			check: func(t *testing.T, out string) {
+				for _, absent := range []string{"disconnected: idle", "reconnected"} {
+					if strings.Contains(out, absent) {
+						t.Errorf("tail output mentions %q with keep-alives on:\n%s", absent, out)
+					}
+				}
+			},
+		},
+		{
+			name:      "reconnects after being idled out",
+			keepalive: "0",
+			settle: func(t *testing.T, out *safeBuffer) {
+				waitFor(t, func() bool { return strings.Contains(out.String(), "disconnected: idle") }, "the idle disconnect")
+				waitFor(t, func() bool { return strings.Contains(out.String(), "reconnected") }, "tail to reconnect")
+			},
+			check: func(*testing.T, string) {},
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			watcher := fmt.Sprintf("watcher-%d", i)
+			said := fmt.Sprintf("after the idle timeout %d", i)
+			runCtx, stopTail := context.WithCancel(ctx)
+			defer stopTail()
+			out := &safeBuffer{}
+			root := newRootCmd()
+			root.SetOut(out)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{"--config", cfg, "tail", addr, "--name", watcher, "--room", "ops", "--keepalive", tt.keepalive})
+			done := make(chan error, 1)
+			go func() { done <- root.ExecuteContext(runCtx) }()
+
+			waitFor(t, func() bool { return strings.Contains(out.String(), watcher+" joined #ops") }, "tail to join")
+			tt.settle(t, out)
+			if err := bob.Say(ctx, said); err != nil {
+				t.Fatalf("say: %v", err)
+			}
+			waitFor(t, func() bool { return strings.Contains(out.String(), said) }, "the message to arrive")
+			stopTail()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("tail returned %v", err)
+				}
+			case <-time.After(wait):
+				t.Fatal("tail did not stop when the context was cancelled")
+			}
+			tt.check(t, out.String())
+		})
+	}
+}
+
+func TestTailPrintsOnlyItsRoomAndNoHistory(t *testing.T) {
+	addr := startTestServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	alice, err := client.Dial(ctx, addr, client.Options{Name: "alice", Room: "ops", DialTimeout: wait})
+	if err != nil {
+		t.Fatalf("dial alice: %v", err)
+	}
+	defer alice.Close()
+	bob, err := client.Dial(ctx, addr, client.Options{Name: "bob", DialTimeout: wait})
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bob.Close()
+	if err := bob.Say(ctx, "general-old"); err != nil {
+		t.Fatal(err)
+	}
+	nextKind(t, bob, protocol.Msg)
+	if err := alice.Say(ctx, "ops-old"); err != nil {
+		t.Fatal(err)
+	}
+	nextKind(t, alice, protocol.Msg)
+
+	runCtx, stopTail := context.WithCancel(ctx)
+	defer stopTail()
+	out := &safeBuffer{}
+	root := newRootCmd()
+	root.SetOut(out)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--config", cfg, "tail", addr, "--name", "watcher", "--room", "ops"})
+	done := make(chan error, 1)
+	go func() { done <- root.ExecuteContext(runCtx) }()
+
+	waitFor(t, func() bool { return strings.Contains(out.String(), "watcher joined #ops") }, "tail to join")
+	if err := alice.Say(ctx, "ops-live"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return strings.Contains(out.String(), "ops-live") }, "the live message")
+	stopTail()
+	<-done
+	for _, absent := range []string{"general-old", "ops-old", "#general"} {
+		if strings.Contains(out.String(), absent) {
+			t.Errorf("tail --room ops printed %q:\n%s", absent, out.String())
 		}
 	}
 }

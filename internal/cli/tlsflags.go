@@ -13,10 +13,11 @@ import (
 )
 
 type dialOpts struct {
-	token    string
-	useTLS   bool
-	insecure bool
-	caFile   string
+	token     string
+	useTLS    bool
+	insecure  bool
+	caFile    string
+	keepAlive time.Duration
 }
 
 func (d *dialOpts) bind(cmd *cobra.Command) {
@@ -25,10 +26,15 @@ func (d *dialOpts) bind(cmd *cobra.Command) {
 	f.BoolVar(&d.useTLS, "tls", false, "dial with TLS")
 	f.BoolVar(&d.insecure, "tls-insecure", false, "with --tls, accept any certificate: for a self-signed server you trust, never over the internet")
 	f.StringVar(&d.caFile, "tls-ca", "", "with --tls, PEM file of the certificate authority that signed the server's certificate")
+	f.DurationVar(&d.keepAlive, "keepalive", 30*time.Second, "ping the server after this long without sending anything, so its idle timeout never fires; 0 disables")
 }
 
 func (d *dialOpts) apply(o *client.Options) error {
 	o.Token = d.token
+	o.KeepAlive = d.keepAlive
+	if d.keepAlive <= 0 {
+		o.KeepAlive = -1
+	}
 	if !d.useTLS {
 		if d.insecure || d.caFile != "" {
 			return errors.New("--tls-insecure and --tls-ca need --tls")
