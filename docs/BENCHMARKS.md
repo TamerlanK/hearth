@@ -70,6 +70,14 @@ CPU is percent of one core, so 689% is about seven of the sixteen hardware
 threads. RSS works out to **about 45 KB per connection** (three goroutines, a
 4 KB scanner buffer and a 32-slot outbox each) over a 20 MB baseline.
 
+These numbers predate D85, which replaced the outbox channel with a mutex
+guarded slice so that a client's own replies are never dropped. A same
+machine A/B of `BenchmarkFanout` before and after that change (Windows,
+go1.27, `-count=3`) put the slice ahead: 1000 recipients went from 54 µs to
+38 µs per broadcast, 100 from 4.1 µs to 3.3 µs, still with zero allocations
+per op once the slices have grown to their working size. The load runs above
+have not been repeated; the fan-out was never the bottleneck they found.
+
 ¹ Seventeen of the 5000 clients were disconnected for outbox overload during the
 *connect* phase, before the measurement window opened, and their share of the
 deliveries never happened. See *Connect storms* below.

@@ -212,23 +212,24 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	log = log.With("name", name, "room", s.cfg.DefaultRoom)
 	log.Info("client joined", "event", "join")
 
-	writerDone := make(chan struct{})
 	go func() {
-		defer close(writerDone)
+		defer close(c.writerDone)
 		c.writeLoop(log)
 	}()
 
 	s.readLoop(ctx, c, log)
 	s.hub.leave(ctx, c)
-	<-writerDone
+	<-c.writerDone
 	log.Info("client left", "event", "leave", "dropped", c.droppedCount(), "overloaded", c.isOverloaded())
 }
 
 func (s *Server) readLoop(ctx context.Context, c *client, log *slog.Logger) {
 	defer recoverPanic(log, "read_loop")
 	for {
-		if c.isOverloaded() {
-			log.Warn("outbox jammed, disconnecting", "event", "overload", "dropped", c.droppedCount())
+		if !c.throttle(ctx) {
+			if c.isOverloaded() {
+				log.Warn("outbox jammed, disconnecting", "event", "overload", "dropped", c.droppedCount())
+			}
 			return
 		}
 		line, err := c.readLine(s.cfg.IdleTimeout)
@@ -240,31 +241,31 @@ func (s *Server) readLoop(ctx context.Context, c *client, log *slog.Logger) {
 			rateLimitedTotal.Inc()
 			if !c.limited {
 				c.limited = true
-				c.trySend(errorEvent("rate limited"))
+				c.push(errorEvent("rate limited"))
 				log.Warn("client rate limited", "event", "rate_limited")
 			}
 			continue
 		}
 		cmd, err := c.dec.Decode(line)
 		if err != nil {
-			c.trySend(errorEvent(decodeError(cmd, err).Error()))
+			c.push(errorEvent(decodeError(cmd, err).Error()))
 			if errors.Is(err, protocol.ErrLineTooLong) {
 				return
 			}
 			continue
 		}
 		if n := utf8.RuneCountInString(cmd.Text); n > maxMessageRunes {
-			c.trySend(errorEvent(fmt.Sprintf("message is longer than %d characters", maxMessageRunes)))
+			c.push(errorEvent(fmt.Sprintf("message is longer than %d characters", maxMessageRunes)))
 			continue
 		}
 		switch cmd.Name {
 		case "quit":
-			c.trySend(systemEvent("bye"))
+			c.push(systemEvent("bye"))
 			return
 		case "help":
-			c.trySend(systemEvent(protocol.HelpText()))
+			c.push(systemEvent(protocol.HelpText()))
 		default:
-			c.trySendAll(s.hub.do(ctx, c, cmd))
+			s.hub.do(ctx, c, cmd)
 		}
 	}
 }
@@ -277,9 +278,9 @@ func (s *Server) reportReadError(ctx context.Context, c *client, err error) {
 	case c.isOverloaded():
 
 	case errors.As(err, &netErr) && netErr.Timeout():
-		c.trySend(systemEvent(fmt.Sprintf("disconnected: idle for %s", s.cfg.IdleTimeout)))
+		c.push(systemEvent(fmt.Sprintf("disconnected: idle for %s", s.cfg.IdleTimeout)))
 	case errors.Is(err, protocol.ErrLineTooLong):
-		c.trySend(errorEvent("line too long, disconnecting"))
+		c.push(errorEvent("line too long, disconnecting"))
 	}
 }
 

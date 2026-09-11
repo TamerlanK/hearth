@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -32,7 +33,6 @@ type client struct {
 	id   string
 	conn net.Conn
 	sc   *bufio.Scanner
-	send chan protocol.Event
 
 	enc protocol.Encoder
 	dec protocol.Decoder
@@ -45,10 +45,15 @@ type client struct {
 	room *room
 	away string
 
-	maxDrops int
-	overload chan struct{}
+	maxDrops   int
+	overload   chan struct{}
+	wake       chan struct{}
+	slot       chan struct{}
+	writerDone chan struct{}
 
 	mu         sync.Mutex
+	queue      []protocol.Event
+	head       int
 	closed     bool
 	dropped    int
 	inARow     int
@@ -57,12 +62,14 @@ type client struct {
 
 func newClient(conn net.Conn, cfg Config) *client {
 	c := &client{
-		id:       newClientID(),
-		conn:     conn,
-		send:     make(chan protocol.Event, sendBuffer),
-		enc:      protocol.TextCodec{},
-		maxDrops: cfg.MaxDropsInARow,
-		overload: make(chan struct{}),
+		id:         newClientID(),
+		conn:       conn,
+		enc:        protocol.TextCodec{},
+		maxDrops:   cfg.MaxDropsInARow,
+		overload:   make(chan struct{}),
+		wake:       make(chan struct{}, 1),
+		slot:       make(chan struct{}, 1),
+		writerDone: make(chan struct{}),
 	}
 	if cfg.MessagesPerSecond > 0 {
 		c.bucket = ratelimit.New(cfg.MessagesPerSecond, cfg.Burst, nil)
@@ -104,26 +111,66 @@ func (c *client) trySend(e protocol.Event) bool {
 	if c.closed {
 		return false
 	}
-	select {
-	case c.send <- e:
+	if len(c.queue)-c.head < sendBuffer {
+		c.queue = append(c.queue, e)
 		c.inARow = 0
+		signal(c.wake)
 		return true
-	default:
-		c.dropped++
-		c.inARow++
-		droppedMessagesTotal.Inc()
-		if c.maxDrops > 0 && c.inARow >= c.maxDrops && !c.overloaded {
-			c.overloaded = true
-			close(c.overload)
-		}
-		return false
 	}
+	c.dropped++
+	c.inARow++
+	droppedMessagesTotal.Inc()
+	if c.maxDrops > 0 && c.inARow >= c.maxDrops && !c.overloaded {
+		c.overloaded = true
+		close(c.overload)
+	}
+	return false
 }
 
-func (c *client) trySendAll(events []protocol.Event) {
-	for _, e := range events {
-		c.trySend(e)
+func (c *client) push(events ...protocol.Event) {
+	if len(events) == 0 {
+		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.queue = append(c.queue, events...)
+	signal(c.wake)
+}
+
+func (c *client) pop() (protocol.Event, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.head == len(c.queue) {
+		return protocol.Event{}, false
+	}
+	e := c.queue[c.head]
+	c.queue[c.head] = protocol.Event{}
+	c.head++
+	if c.head == len(c.queue) {
+		c.head = 0
+		if cap(c.queue) > 4*sendBuffer {
+			c.queue = nil
+		} else {
+			c.queue = c.queue[:0]
+		}
+	}
+	signal(c.slot)
+	return e, true
+}
+
+func (c *client) backlog() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.queue) - c.head
+}
+
+func (c *client) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (c *client) closeSend() {
@@ -131,7 +178,29 @@ func (c *client) closeSend() {
 	defer c.mu.Unlock()
 	if !c.closed {
 		c.closed = true
-		close(c.send)
+		signal(c.wake)
+	}
+}
+
+func (c *client) throttle(ctx context.Context) bool {
+	for c.backlog() >= sendBuffer {
+		select {
+		case <-c.slot:
+		case <-c.writerDone:
+			return false
+		case <-c.overload:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
 	}
 }
 
@@ -194,7 +263,15 @@ func (c *client) writeEvent(e protocol.Event) error {
 func (c *client) writeLoop(log *slog.Logger) {
 	defer closeConn(c.conn, log)
 	defer recoverPanic(log, "write_loop")
-	for e := range c.send {
+	for {
+		e, ok := c.pop()
+		if !ok {
+			if c.isClosed() {
+				break
+			}
+			<-c.wake
+			continue
+		}
 		if err := c.writeEvent(e); err != nil {
 			log.Debug("write failed", "event", "write_error", "err", err)
 			return

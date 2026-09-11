@@ -341,7 +341,9 @@ func TestConsecutiveDropCountResets(t *testing.T) {
 	c.trySend(systemEvent("drop"))
 	c.trySend(systemEvent("drop"))
 
-	<-c.send
+	if _, ok := c.pop(); !ok {
+		t.Fatal("pop from a full outbox returned nothing")
+	}
 	if !c.trySend(systemEvent("room freed up")) {
 		t.Fatal("send into a freed slot was dropped")
 	}
@@ -353,6 +355,85 @@ func TestConsecutiveDropCountResets(t *testing.T) {
 	}
 	if got := c.droppedCount(); got < 3 {
 		t.Errorf("dropped = %d, want at least 3", got)
+	}
+}
+
+func TestPushIsNeverDroppedAndKeepsOrder(t *testing.T) {
+	c := newClient(nil, Config{MaxDropsInARow: 1})
+	for range sendBuffer {
+		c.trySend(systemEvent("broadcast"))
+	}
+	if c.trySend(systemEvent("dropped")) {
+		t.Fatal("broadcast into a full outbox was accepted")
+	}
+	replay := make([]protocol.Event, 0, 3*sendBuffer)
+	for i := range 3 * sendBuffer {
+		replay = append(replay, systemEvent(fmt.Sprintf("reply-%d", i)))
+	}
+	c.push(replay...)
+	if got := c.backlog(); got != 4*sendBuffer {
+		t.Fatalf("backlog = %d, want %d: a reply was dropped", got, 4*sendBuffer)
+	}
+	if got := c.droppedCount(); got != 1 {
+		t.Errorf("dropped = %d, want 1: push must not count as a drop", got)
+	}
+	for i := range 4 * sendBuffer {
+		e, ok := c.pop()
+		if !ok {
+			t.Fatalf("pop %d: queue empty early", i)
+		}
+		want := "broadcast"
+		if i >= sendBuffer {
+			want = fmt.Sprintf("reply-%d", i-sendBuffer)
+		}
+		if e.Text != want {
+			t.Fatalf("pop %d = %q, want %q", i, e.Text, want)
+		}
+	}
+	if _, ok := c.pop(); ok {
+		t.Error("queue not empty after draining everything")
+	}
+	c.closeSend()
+	c.push(systemEvent("after close"))
+	if got := c.backlog(); got != 0 {
+		t.Errorf("push after close queued %d events", got)
+	}
+}
+
+func TestThrottleWaitsForTheWriter(t *testing.T) {
+	c := newClient(nil, Config{})
+	for range sendBuffer {
+		c.trySend(systemEvent("fill"))
+	}
+	released := make(chan bool, 1)
+	go func() { released <- c.throttle(context.Background()) }()
+	select {
+	case <-released:
+		t.Fatal("throttle returned with a full outbox")
+	case <-time.After(50 * time.Millisecond):
+	}
+	c.pop()
+	select {
+	case ok := <-released:
+		if !ok {
+			t.Error("throttle reported cancellation after a slot freed up")
+		}
+	case <-time.After(wait):
+		t.Fatal("throttle did not release after the writer drained one event")
+	}
+
+	for range sendBuffer {
+		c.trySend(systemEvent("fill"))
+	}
+	go func() { released <- c.throttle(context.Background()) }()
+	close(c.writerDone)
+	select {
+	case ok := <-released:
+		if ok {
+			t.Error("throttle kept reading after the writer ended")
+		}
+	case <-time.After(wait):
+		t.Fatal("throttle did not release when the writer ended")
 	}
 }
 
@@ -621,6 +702,67 @@ func TestMaxRooms(t *testing.T) {
 	expectLine(t, alice, "* alice joined #golang", wait)
 	send(t, alice, "/join rust")
 	expectLine(t, alice, "! too many rooms, limit is 2", wait)
+}
+
+func TestFullHistoryAndMOTDArriveOnRegistration(t *testing.T) {
+	const motd = "welcome-line-one\nwelcome-line-two"
+	addr, _, _ := startServer(t, Config{HistorySize: defaultHistorySize, MOTD: motd})
+	alice := dial(t, addr, "alice")
+	expectLine(t, alice, "alice joined", wait)
+	sayMany(t, alice, defaultHistorySize)
+
+	bob := dial(t, addr, "bob")
+	lines := readUntil(t, bob, "welcome-line-two")
+	assertReplay(t, lines, defaultHistorySize)
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "welcome-line-one") }) {
+		t.Error("first motd line missing")
+	}
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "bob joined") }); i != 0 {
+		t.Errorf("join notice at index %d, want 0 (before the replay)", i)
+	}
+}
+
+func TestFullHistoryArrivesOnJoinAndHistory(t *testing.T) {
+	addr, _, _ := startServer(t, Config{HistorySize: defaultHistorySize})
+	alice := dial(t, addr, "alice")
+	expectLine(t, alice, "alice joined", wait)
+	send(t, alice, "/join busy")
+	expectLine(t, alice, "alice joined #busy", wait)
+	sayMany(t, alice, defaultHistorySize)
+
+	bob := dial(t, addr, "bob")
+	expectLine(t, bob, "bob joined #general", wait)
+	send(t, bob, "/join busy")
+	lines := readUntil(t, bob, fmt.Sprintf("line-%02d", defaultHistorySize-1))
+	assertReplay(t, lines, defaultHistorySize)
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "bob joined #busy") }); i < 0 || i > slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "line-00") }) {
+		t.Errorf("join notice not before the replay: %v", lines)
+	}
+
+	send(t, bob, "/history")
+	lines = readUntil(t, bob, fmt.Sprintf("line-%02d", defaultHistorySize-1))
+	assertReplay(t, lines, defaultHistorySize)
+}
+
+func sayMany(t *testing.T, c *tconn, n int) {
+	t.Helper()
+	for i := range n {
+		send(t, c, fmt.Sprintf("line-%02d", i))
+		expectLine(t, c, fmt.Sprintf("line-%02d", i), wait)
+	}
+}
+
+func assertReplay(t *testing.T, lines []string, n int) {
+	t.Helper()
+	next := 0
+	for _, l := range lines {
+		if strings.Contains(l, fmt.Sprintf("line-%02d", next)) {
+			next++
+		}
+	}
+	if next != n {
+		t.Errorf("replayed %d of %d messages in order", next, n)
+	}
 }
 
 func TestHistorySizeIsConfigurable(t *testing.T) {

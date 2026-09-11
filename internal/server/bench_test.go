@@ -45,8 +45,10 @@ func BenchmarkFanout(b *testing.B) {
 
 func drainOutboxes(clients []*client) {
 	for _, c := range clients {
-		for len(c.send) > 0 {
-			<-c.send
+		for {
+			if _, ok := c.pop(); !ok {
+				break
+			}
 		}
 	}
 }

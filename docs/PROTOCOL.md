@@ -287,11 +287,20 @@ flushed before the socket goes away, so the last line you read explains why.
 
 ### Flow control
 
-Each connection has a 32-event outbound buffer. A client that stops reading
-does not stall anyone else: its buffer fills, further events are **dropped**
-for that client only, and once the 5-second write deadline expires it is
-disconnected. Chat delivery is therefore best-effort, not guaranteed. Read
-continuously; do not use the socket as a queue.
+Each connection has an outbound queue. Room traffic — `msg`, `join`, `leave`,
+`nick`, `away`, and a `privmsg` from someone else — is admitted only while
+fewer than 32 events are queued; beyond that it is **dropped** for that client
+only, so a client that stops reading does not stall anyone else, and once the
+5-second write deadline expires it is disconnected. Chat delivery is therefore
+best-effort, not guaranteed. Read continuously; do not use the socket as a
+queue.
+
+Events the client asked for are never dropped: the history replay and the
+message of the day on join, the answers to `who`, `rooms`, `history` and
+`ping`, the echo of its own `msg`, and every `error`. They are queued whatever
+the backlog, in order with everything around them, and while that backlog is
+at the limit the server stops reading the client's input until it has drained.
+A `history` reply of 50 messages arrives complete.
 
 A client that accumulates too many dropped events in a row (100 by default) is
 disconnected rather than left in a permanently degraded state. The server tries

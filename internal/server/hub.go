@@ -44,7 +44,7 @@ type registration struct {
 type request struct {
 	c     *client
 	cmd   protocol.Command
-	reply chan []protocol.Event
+	reply chan struct{}
 }
 
 func newHub(cfg Config) *hub {
@@ -69,7 +69,7 @@ func (h *hub) run(ctx context.Context) {
 		case <-ctx.Done():
 			for _, r := range h.rooms {
 				for c := range r.members {
-					c.trySend(systemEvent("server shutting down"))
+					c.push(systemEvent("server shutting down"))
 					c.closeSend()
 				}
 			}
@@ -79,7 +79,8 @@ func (h *hub) run(ctx context.Context) {
 		case c := <-h.leaving:
 			h.remove(c)
 		case r := <-h.requests:
-			r.reply <- h.handle(r.c, r.cmd)
+			r.c.push(h.handle(r.c, r.cmd)...)
+			close(r.reply)
 		}
 	}
 }
@@ -112,8 +113,8 @@ func (h *hub) add(c *client, name string) error {
 	h.byName[name] = c
 	r.members[c] = struct{}{}
 	h.broadcast(r, protocol.Event{Kind: protocol.Join, Room: r.name, From: name, Time: time.Now()})
-	c.trySendAll(replay(r))
-	c.trySendAll(h.motd)
+	c.push(replay(r)...)
+	c.push(h.motd...)
 	return nil
 }
 
@@ -328,13 +329,12 @@ func (h *hub) leave(ctx context.Context, c *client) {
 	}
 }
 
-func (h *hub) do(ctx context.Context, c *client, cmd protocol.Command) []protocol.Event {
-	r := request{c: c, cmd: cmd, reply: make(chan []protocol.Event, 1)}
+func (h *hub) do(ctx context.Context, c *client, cmd protocol.Command) {
+	r := request{c: c, cmd: cmd, reply: make(chan struct{})}
 	select {
 	case h.requests <- r:
-		return <-r.reply
+		<-r.reply
 	case <-ctx.Done():
-		return nil
 	}
 }
 

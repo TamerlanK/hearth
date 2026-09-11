@@ -28,7 +28,7 @@ not import the server or the UI. The dependency arrows all point at
 - Exactly one hub goroutine owns all shared state (the room registry, every client's name and room, and per-room history); nothing else touches it.
 - Each client gets two goroutines: a reader that parses lines from the socket and a writer that drains an outbound channel.
 - All communication between the hub and clients is by channel, so there are no locks on chat state.
-- Outbound channels are buffered (32 events). Fan-out is non-blocking: a client that cannot keep up has messages dropped and counted, and the 5s write deadline eventually disconnects one that is truly stuck.
+- Each client has one ordered outbound queue with two admission rules. Room traffic is admitted only while fewer than 32 events are queued, so fan-out is non-blocking: a client that cannot keep up has broadcasts dropped and counted, and the 5s write deadline eventually disconnects one that is truly stuck. Replies to the client's own commands — the history replay, the MOTD, `who`, `rooms`, errors — are always queued; while that backlog is at the limit the client's read loop pauses instead, so a client can never make the server hold more than one reply's worth beyond the limit.
 - `pkg/protocol` owns the wire format: `Event`, `Command`, the `Encoder`/`Decoder` interfaces and the two codecs. The server passes `protocol.Event` values around and never formats a string for the wire; rendering happens inside the codec a client owns.
 - Each connection negotiates its encoding once (text or JSON lines) and keeps it. `internal/server/session.go` runs the handshake: the first line is inspected for `HELLO`, then every line is a name attempt until the hub accepts one, and the accepted name is returned to the caller.
 - Shutdown is context-driven: cancelling the server context stops the accept loop, then the hub, then the connections.
@@ -54,9 +54,10 @@ path:
 
 - **hub**: `ctx.Done()`.
 - **readLoop**: EOF, a read error, `/quit`, the idle deadline, the overload
-  signal, or the interrupt watcher's deadline on shutdown.
-- **writeLoop**: `send` closed by the hub (on leave or shutdown) or a write
-  error.
+  signal, the interrupt watcher's deadline on shutdown, or the writer ending
+  while the loop waits for its own backlog to drain.
+- **writeLoop**: the queue marked closed by the hub (on leave or shutdown) and
+  drained, or a write error.
 - **interrupt watcher**: `connDone` closed when `handleConn` returns.
 
 Every hub interaction from the client side is a `select` against the hub's
@@ -72,7 +73,7 @@ job is written down here.
 | State | Owner | How others reach it |
 |-------|-------|---------------------|
 | `hub.rooms`, `room.members`, `room.history`, `client.name`, `client.room` | hub goroutine | messages on `register`, `leaving`, `requests`, each carrying a reply channel |
-| `client.send` (the outbox) | hub closes it; hub *and* the connection's own read goroutine send on it | `client.mu` serialises `trySend` against `closeSend`; also guards `closed`, `dropped`, `inARow`, `overloaded` |
+| `client.queue` (the outbox) | `client.mu`: the hub appends with `trySend` (dropped at 32) or `push` (never dropped), the connection's read goroutine appends with `push`, `writeLoop` pops; the hub marks it closed | the same mutex guards `closed`, `dropped`, `inARow`, `overloaded`; `wake` tells the writer there is work, `slot` tells a throttled reader an event went out |
 | `client.enc`, `client.dec`, `client.seq` | connection goroutine during the handshake, then `writeLoop` | the `go` statement is the happens-before edge; nothing else touches them |
 | `client.bucket`, `client.limited` | the connection's read goroutine only | nothing else needs them, so the bucket has no lock |
 | `client.conn` `Close` | `writeLoop` | readers are interrupted with `SetReadDeadline(now)`, never by closing |
@@ -106,9 +107,9 @@ Accept() ──────────▶  active++ ; over MaxClients?
                        readLoop:
                          line ─▶ dec.Decode ─▶ Command
                               ─▶ /quit, /help answered locally
-                              ─▶ hub.do(cmd) ──▶ hub applies it, fans out Events,
-                                                 returns Events for this client
-                                                 ──▶ send chan ──▶ enc.Encode ──▶ conn.Write
+                              ─▶ hub.do(cmd) ──▶ hub applies it, fans out Events with
+                                                 trySend, pushes this client's replies
+                                                 ──▶ queue ──▶ enc.Encode ──▶ conn.Write
                        readLoop returns (EOF, /quit, idle, error)
                        leave(c) ──────────────────▶  drop from its room; close(c.send);
                                                      emit Leave; GC the room if empty
@@ -192,7 +193,7 @@ it during registration, and only the hub follows the pointer afterwards.
 
 | Failure | What the server does | Where |
 |---------|----------------------|-------|
-| **Slow client** (stops reading, keeps the socket open) | Its outbox (32 events) fills; further events are dropped for it alone and counted. After `MaxDropsInARow` consecutive drops the client is marked overloaded, its blocked read is interrupted, and it is disconnected; the write loop makes one best-effort attempt to deliver `! too many dropped messages, disconnecting` before the socket closes. Nobody else waits: fan-out is `trySend` with a `default:` case. | `client.trySend`, `client.writeLoop` |
+| **Slow client** (stops reading, keeps the socket open) | Its outbox reaches 32 queued events; further room traffic is dropped for it alone and counted. After `MaxDropsInARow` consecutive drops the client is marked overloaded, its blocked read is interrupted, and it is disconnected; the write loop makes one best-effort attempt to deliver `! too many dropped messages, disconnecting` before the socket closes. Nobody else waits: fan-out is `trySend`, which never blocks. Replies to the client's own commands are still queued in full, and its read loop pauses while the backlog is at the limit, so it cannot pile up replies it is not reading. | `client.trySend`, `client.push`, `client.throttle`, `client.writeLoop` |
 | **Slow client that also stops draining TCP** | The 5s write deadline fails the write, the write loop returns, and the connection closes. | `client.writeEvent` |
 | **Over-long line** (no newline, megabytes of data) | `bufio.Scanner` is capped at 4096 bytes, so memory cannot grow: the scan fails with `ErrLineTooLong`, the client gets one `! line too long, disconnecting`, and the connection closes. The cap is enforced before any decoding. | `client.readLine` |
 | **Over-long message** (a legal line whose text is huge) | Rejected after decoding at 1024 runes with `! message is longer than 1024 characters`; the connection stays open. This is separate from the byte cap because a 4096-byte line can hold far fewer runes than a client expects. | `Server.readLoop` |
@@ -216,7 +217,7 @@ The client set is touched by exactly one goroutine, the hub. Joining, leaving, b
 Two pieces of state live outside the hub and are documented where they sit:
 
 - `Server.mu` guards `Server.active` (the open-connection count) and `Server.perIP` (connections per remote address). Admission is one locked step — check both caps, then increment — so the accept path never round-trips to the hub, and two simultaneous connections from one host cannot both pass a cap with one slot left.
-- `client.mu` guards `closed`, `dropped`, `inARow` and `overloaded`, and serialises `trySend` against `closeSend`. The client's own read goroutine also writes to `send` (command replies), so the hub cannot be the sole writer; the tiny mutex is what makes closing the channel safe. The consecutive-drop counter lives under the same lock because it is updated on exactly the same path.
+- `client.mu` guards the outbox queue, `closed`, `dropped`, `inARow` and `overloaded`. The hub appends to the queue (fan-out and command replies), the client's own read goroutine appends to it (local replies such as `rate limited` and `bye`), and `writeLoop` pops from it, so the queue has three users and one small mutex; the hub holds it for one append at a time and never waits on anything under it. The consecutive-drop counter lives under the same lock because it is updated on exactly the same path.
 - `client.bucket` and `client.limited` (the rate limiter and its warn-once flag) are touched only by that connection's read goroutine, which is the only thing that reads lines. `ratelimit.Bucket` is deliberately not goroutine-safe: giving it a lock would be a lock nobody needs.
 
 `client.name` and `client.room` need no lock because only the hub goroutine ever touches them — see *Who owns a client's name* above.
@@ -270,7 +271,7 @@ shape everything else, plus one that the benchmarks turned into a decision.
 | **One hub goroutine** owns rooms, names and history | Shard by room, each shard its own goroutine; or a global `sync.RWMutex` around the maps | Name uniqueness and room membership need one atomic step; one goroutine gives that with no lock ordering to get wrong. The fan-out benchmark puts the hub at 35 ns per recipient, so it delivers a message to 1000 outboxes in 35 µs and never exceeded 4% of CPU in the load runs. | Every command serialises through one goroutine. Sharding would help only after the write path is fixed, and would need a cross-shard name directory. |
 | **Channels, not a mutex**, between connections and the hub | Mutex-guarded maps that connection goroutines touch directly | Ownership is structural: the map is reachable from one goroutine, so there is nothing to forget to lock and `-race` has nothing to find. Reply channels make request/response explicit. | Two small mutexes still exist (`client.mu`, `Server.mu`) for state the hub cannot own; each is documented above. Channel hops cost more than an uncontended lock, which is irrelevant at chat rates. |
 | **Line-delimited text or JSON**, one JSON object per line | Length-prefixed binary framing (protobuf, msgpack) | `telnet` and `nc` are clients; a human can read a capture; every language has a JSON parser and a line reader. The encode cost is 0.5 µs per event, an order of magnitude under the syscall that follows it. | 11% of server CPU under load is JSON marshalling because each recipient encodes the same event. A binary frame would be smaller and faster but unreadable at the prompt. |
-| **Drop on full outbox**, never block the hub | Block until the slow client drains; or unbounded queues; or per-client goroutine that blocks in fan-out | One slow reader must not stall a room. A 32-slot buffer absorbs bursts; beyond it that client alone loses events, is counted, and is disconnected after 100 consecutive drops. Delivery is documented as best-effort. | Chat is lossy under overload. `seq` detects reordering, not loss, so a client cannot ask for a resend. |
+| **Drop room traffic at 32 queued, never block the hub; never drop a client's own replies** | Block until the slow client drains; or unbounded queues; or per-client goroutine that blocks in fan-out; or one bounded channel for everything (what shipped first, and what lost the tail of every 50-message replay into a 32-slot buffer) | One slow reader must not stall a room, and a client must get back what it asked for. Room traffic beyond 32 queued is dropped for that client alone, counted, and disconnects it after 100 consecutive drops; replay, MOTD and command replies are always queued, in order, and the client's read loop pauses while its backlog is at the limit. Delivery of room traffic is documented as best-effort. | Chat is lossy under overload. `seq` detects reordering, not loss, so a client cannot ask for a resend. A client's own backlog can exceed 32 by one reply (at most `--history` plus the MOTD). |
 | **Negotiation by the first line** (`HELLO hearth/1 json`) | A version handshake with capability lists; sniffing the first byte; separate ports | One comparison, zero state machine, and a server that does not understand it treats it as a name, which is the correct fallback. | The greeting goes out before the encoding is known, so a JSON client reads exactly one text line first. A second negotiable option would want a real handshake. |
 | **One `write(2)` per event per recipient** (current) | Batch with `bufio.Writer` flushed when the outbox is empty; encode once per broadcast and share the bytes | Simplest correct thing; at rooms of tens of people it is invisible. | The profile at 500 000 deliveries/s puts 55% of CPU in the syscall and 11% in encoding. This is the documented next change; see `docs/BENCHMARKS.md`. |
 
