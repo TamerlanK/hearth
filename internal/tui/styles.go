@@ -18,6 +18,7 @@ type styles struct {
 	own          lipgloss.Style
 	system       lipgloss.Style
 	private      lipgloss.Style
+	mention      lipgloss.Style
 	failure      lipgloss.Style
 	divider      lipgloss.Style
 	pill         lipgloss.Style
@@ -76,6 +77,7 @@ func newStyles(color bool) styles {
 		own:          fg(ok).Bold(true),
 		system:       fg(dim).Italic(true),
 		private:      fg(warn),
+		mention:      fg(warn).Bold(true),
 		failure:      fg(danger).Bold(true),
 		divider:      fg(dim),
 		pill:         fg(warn).Bold(true),

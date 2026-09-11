@@ -438,7 +438,7 @@ func TestDMConversationsGetTheirOwnTab(t *testing.T) {
 	if got := texts(m, "#general"); slices.Contains(got, "privmsg:psst") {
 		t.Error("the DM also landed in the room transcript")
 	}
-	if m.rooms["@bob"].unread != 1 || !strings.Contains(plain(m.View()), "@bob •1") {
+	if m.rooms["@bob"].unread != 1 || !strings.Contains(plain(m.View()), "@bob @1") {
 		t.Errorf("no unread badge on the DM tab:\n%s", plain(m.View()))
 	}
 
@@ -500,5 +500,57 @@ func TestPickingAUserOpensADM(t *testing.T) {
 	}
 	if got := texts(m, "@bob"); len(got) != 0 {
 		t.Errorf("a fresh DM tab has %q in it", got)
+	}
+}
+
+func TestMentionsAreCountedAndRingTheBell(t *testing.T) {
+	m := joined(t, 100, 30)
+	m.bell = true
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Join, Room: "#golang", From: "alice"}))
+
+	rang := func(e protocol.Event) bool {
+		t.Helper()
+		next, cmd := tea.Model(m).Update(event(e))
+		m = next.(*Model)
+		return cmd != nil
+	}
+	tests := []struct {
+		name string
+		e    protocol.Event
+		want bool
+	}{
+		{"plain text", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "hello all"}, false},
+		{"name mid-sentence", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "hey Alice, ping"}, true},
+		{"at-mention with punctuation", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "@alice!"}, true},
+		{"name as a prefix of a longer word", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "alice2 is here"}, false},
+		{"own message naming myself", protocol.Event{Kind: protocol.Msg, Room: "#golang", From: "alice", Text: "alice here"}, false},
+		{"private message", protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "psst"}, true},
+		{"system notice", protocol.Event{Kind: protocol.System, Text: "alice"}, false},
+	}
+	for _, tt := range tests {
+		if got := rang(tt.e); got != tt.want {
+			t.Errorf("%s: bell = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	if r := m.rooms["#general"]; r.unread != 4 || r.mentions != 2 {
+		t.Errorf("#general unread = %d, mentions = %d; want 4 and 2", r.unread, r.mentions)
+	}
+	if r := m.rooms["@bob"]; r.unread != 1 || r.mentions != 1 {
+		t.Errorf("@bob unread = %d, mentions = %d; want 1 and 1", r.unread, r.mentions)
+	}
+	view := plain(m.View())
+	for _, want := range []string{"#general (2) @4", "@bob @1"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("sidebar lacks %q:\n%s", want, view)
+		}
+	}
+
+	m.bell = false
+	if rang(protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "again"}) {
+		t.Error("the bell rang with --bell=false")
+	}
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Join, Room: "#general", From: "alice"}))
+	if r := m.rooms["#general"]; r.unread != 0 || r.mentions != 0 {
+		t.Errorf("viewing the room left unread = %d, mentions = %d", r.unread, r.mentions)
 	}
 }

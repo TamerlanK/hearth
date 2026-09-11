@@ -10,12 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func Run(ctx context.Context, c *client.Client, addr, name string) error {
-	p := tea.NewProgram(
-		newModel(c, addr, name, os.Getenv("NO_COLOR") == ""),
-		tea.WithContext(ctx),
-		tea.WithAltScreen(),
-	)
+func Run(ctx context.Context, c *client.Client, addr, name string, bell bool) error {
+	m := newModel(c, addr, name, os.Getenv("NO_COLOR") == "")
+	m.bell = bell
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil && !isCancelled(ctx, err) {
 		return fmt.Errorf("terminal ui: %w", err)
 	}

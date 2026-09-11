@@ -98,6 +98,9 @@ func (m *Model) tone(e protocol.Event) lipgloss.Style {
 		if e.From == m.me {
 			return m.style.own
 		}
+		if namesMe(e.Text, m.me) {
+			return m.style.mention
+		}
 		return m.style.text
 	case protocol.PrivMsg:
 		return m.style.private
@@ -138,7 +141,7 @@ func (m *Model) sidebar() string {
 		if m.focus == paneRooms && i == m.choice {
 			style = style.Underline(true)
 		}
-		lines = append(lines, style.Render(roomLabel(it.name, r.members, r.unread, it.name == m.current, w)))
+		lines = append(lines, style.Render(roomLabel(it.name, r.members, r.unread, r.mentions, it.name == m.current, w)))
 	}
 	lines = append(lines, fit("", w), m.style.sidebarTitle.Render(fit("Users in "+m.room, w)))
 	if r, ok := m.rooms[m.room]; ok {

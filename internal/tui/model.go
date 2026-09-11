@@ -2,9 +2,12 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/TamerlanK/hearth/internal/ring"
 	"github.com/TamerlanK/hearth/pkg/client"
@@ -62,11 +65,12 @@ func dmTab(e protocol.Event, me string) string {
 }
 
 type roomState struct {
-	name    string
-	members int
-	unread  int
-	users   []string
-	log     *ring.Ring[protocol.Event]
+	name     string
+	members  int
+	unread   int
+	mentions int
+	users    []string
+	log      *ring.Ring[protocol.Event]
 }
 
 type Model struct {
@@ -83,6 +87,7 @@ type Model struct {
 	focus   pane
 	choice  int
 	help    bool
+	bell    bool
 	follow  bool
 	pending bool
 	past    []string
@@ -390,7 +395,7 @@ func (m *Model) open(name string) tea.Cmd {
 func (m *Model) show(name string) {
 	m.current = name
 	r := m.touch(name)
-	r.unread = 0
+	r.unread, r.mentions = 0, 0
 	m.follow, m.pending = true, false
 	m.redraw()
 }
@@ -532,7 +537,39 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 		e.Text = "pong"
 	}
 	m.record(e)
+	if m.bell && m.mentioned(e) {
+		cmd = tea.Batch(cmd, chime)
+	}
 	return cmd
+}
+
+func (m *Model) mentioned(e protocol.Event) bool {
+	if e.From == m.me {
+		return false
+	}
+	switch e.Kind {
+	case protocol.PrivMsg:
+		return true
+	case protocol.Msg:
+		return namesMe(e.Text, m.me)
+	}
+	return false
+}
+
+func namesMe(text, me string) bool {
+	for _, word := range strings.Fields(text) {
+		if strings.EqualFold(strings.TrimFunc(word, unicode.IsPunct), me) {
+			return true
+		}
+	}
+	return false
+}
+
+func chime() tea.Msg {
+	if _, err := os.Stdout.WriteString("\a"); err != nil {
+		return sentMsg{err: fmt.Errorf("ring the bell: %w", err)}
+	}
+	return nil
 }
 
 func (m *Model) answer(kind protocol.Kind) bool {
@@ -623,6 +660,9 @@ func (m *Model) record(e protocol.Event) {
 	if room != m.current {
 		if e.Kind == protocol.Msg || e.Kind == protocol.PrivMsg {
 			r.unread++
+		}
+		if m.mentioned(e) {
+			r.mentions++
 		}
 		return
 	}

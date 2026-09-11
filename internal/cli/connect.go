@@ -19,7 +19,7 @@ import (
 
 func newConnectCmd() *cobra.Command {
 	var opts client.Options
-	var plain bool
+	var plain, bell bool
 	cmd := &cobra.Command{
 		Use:   "connect <host:port>",
 		Short: "Join a chat server",
@@ -59,7 +59,7 @@ reconnects and is meant for pipes and scripts.`,
 			if plain {
 				return runPlain(ctx, c, cmd.InOrStdin(), cmd.OutOrStdout())
 			}
-			return tui.Run(ctx, c, args[0], opts.Name)
+			return tui.Run(ctx, c, args[0], opts.Name, bell)
 		},
 	}
 	f := cmd.Flags()
@@ -67,6 +67,7 @@ reconnects and is meant for pipes and scripts.`,
 	f.StringVar(&opts.Room, "room", "", "room to join right after connecting (default the server's default room)")
 	f.BoolVar(&plain, "plain", false, "use the minimal line client on stdin/stdout instead of the terminal UI; good for scripts and debugging")
 	f.DurationVar(&opts.DialTimeout, "timeout", 10*time.Second, "time allowed to dial and complete the name handshake")
+	f.BoolVar(&bell, "bell", true, "ring the terminal bell when someone mentions you or sends you a private message")
 	return cmd
 }
 

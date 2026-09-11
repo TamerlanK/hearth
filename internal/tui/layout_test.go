@@ -143,8 +143,8 @@ func TestFit(t *testing.T) {
 
 func TestBadge(t *testing.T) {
 	tests := []struct {
-		unread int
-		want   string
+		unread, mentions int
+		want             string
 	}{
 		{unread: -1, want: ""},
 		{unread: 0, want: ""},
@@ -152,33 +152,39 @@ func TestBadge(t *testing.T) {
 		{unread: 42, want: "•42"},
 		{unread: 99, want: "•99"},
 		{unread: 100, want: "•99+"},
+		{unread: 3, mentions: 1, want: "@3"},
+		{unread: 100, mentions: 2, want: "@99+"},
+		{unread: 0, mentions: 1, want: ""},
 	}
 	for _, tt := range tests {
-		if got := badge(tt.unread); got != tt.want {
-			t.Errorf("badge(%d) = %q, want %q", tt.unread, got, tt.want)
+		if got := badge(tt.unread, tt.mentions); got != tt.want {
+			t.Errorf("badge(%d, %d) = %q, want %q", tt.unread, tt.mentions, got, tt.want)
 		}
 	}
 }
 
 func TestRoomLabel(t *testing.T) {
 	tests := []struct {
-		name    string
-		room    string
-		members int
-		unread  int
-		current bool
-		width   int
-		want    string
+		name     string
+		room     string
+		members  int
+		unread   int
+		mentions int
+		current  bool
+		width    int
+		want     string
 	}{
 		{name: "plain", room: "#general", members: 3, width: 24, want: " #general (3)            "[:24]},
 		{name: "current is marked", room: "#golang", members: 1, current: true, width: 24, want: ">#golang (1)            "},
 		{name: "unread badge", room: "#golang", members: 1, unread: 2, width: 24, want: " #golang (1) •2         "},
+		{name: "mention badge", room: "#golang", members: 1, unread: 2, mentions: 1, width: 24, want: " #golang (1) @2         "},
+		{name: "dm tab", room: "@bob", unread: 1, mentions: 1, width: 24, want: " @bob @1                "},
 		{name: "no members known", room: "#ops", width: 24, want: " #ops                   "},
 		{name: "truncated", room: "#a-very-long-room-name", members: 12, unread: 7, width: 16, want: " #a-very-long-r…"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := roomLabel(tt.room, tt.members, tt.unread, tt.current, tt.width)
+			got := roomLabel(tt.room, tt.members, tt.unread, tt.mentions, tt.current, tt.width)
 			if got != tt.want {
 				t.Errorf("roomLabel = %q, want %q", got, tt.want)
 			}

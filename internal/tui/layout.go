@@ -108,18 +108,22 @@ func fit(s string, width int) string {
 	return head + "…" + strings.Repeat(" ", max(0, width-lipgloss.Width(head)-1))
 }
 
-func badge(unread int) string {
+func badge(unread, mentions int) string {
+	mark := "•"
+	if mentions > 0 {
+		mark = "@"
+	}
 	switch {
 	case unread <= 0:
 		return ""
 	case unread > 99:
-		return "•99+"
+		return mark + "99+"
 	default:
-		return "•" + strconv.Itoa(unread)
+		return mark + strconv.Itoa(unread)
 	}
 }
 
-func roomLabel(name string, members, unread int, current bool, width int) string {
+func roomLabel(name string, members, unread, mentions int, current bool, width int) string {
 	mark := " "
 	if current {
 		mark = ">"
@@ -128,7 +132,7 @@ func roomLabel(name string, members, unread int, current bool, width int) string
 	if members > 0 {
 		label += " (" + strconv.Itoa(members) + ")"
 	}
-	if b := badge(unread); b != "" {
+	if b := badge(unread, mentions); b != "" {
 		label += " " + b
 	}
 	return fit(label, width)
