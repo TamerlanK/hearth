@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/TamerlanK/hearth/internal/server"
+	"github.com/TamerlanK/hearth/pkg/client"
+	"github.com/TamerlanK/hearth/pkg/protocol"
 	"github.com/spf13/cobra"
 )
 
@@ -502,5 +504,102 @@ func TestResolveTargetFallsBackToTheOSUser(t *testing.T) {
 	}
 	if _, got, _ := resolveTarget(root, []string{"h:1"}, "carol"); got != "carol" {
 		t.Errorf("an explicit name resolved to %q", got)
+	}
+}
+
+func TestSendWhoAndRooms(t *testing.T) {
+	addr := startTestServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	bob, err := client.Dial(ctx, addr, client.Options{Name: "bob", DialTimeout: wait})
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bob.Close()
+	next := func(kind protocol.Kind) protocol.Event {
+		t.Helper()
+		for {
+			select {
+			case e, ok := <-bob.Events():
+				if !ok {
+					t.Fatal("bob's event stream closed")
+				}
+				if e.Kind == kind {
+					return e
+				}
+			case <-time.After(wait):
+				t.Fatalf("bob got no %s event", kind)
+			}
+		}
+	}
+
+	out, err := runCLI(t, "", "--config", cfg, "send", addr, "--name", "ci", "deploy", "finished")
+	if err != nil || out != "" {
+		t.Fatalf("send: err = %v, output = %q", err, out)
+	}
+	if e := next(protocol.Msg); e.From != "ci" || e.Text != "deploy finished" {
+		t.Errorf("bob saw %+v, want 'deploy finished' from ci", e)
+	}
+
+	if _, err := runCLI(t, "one\n\ntwo\n", "--config", cfg, "send", addr, "--name", "ci", "--to", "bob"); err != nil {
+		t.Fatalf("send from stdin: %v", err)
+	}
+	for _, want := range []string{"one", "two"} {
+		if e := next(protocol.PrivMsg); e.Text != want || e.To != "bob" {
+			t.Errorf("bob's DM = %+v, want %q", e, want)
+		}
+	}
+
+	_, err = runCLI(t, "", "--config", cfg, "send", addr, "--name", "ci", "--to", "nobody", "hello?")
+	var serr *client.ServerError
+	if !errors.As(err, &serr) || !strings.Contains(err.Error(), "no such user") {
+		t.Errorf("send to a missing user: %v, want the server's error", err)
+	}
+
+	_, err = runCLI(t, "", "--config", cfg, "send", addr, "--name", "bob", "impostor")
+	if !errors.Is(err, client.ErrNameTaken) || !strings.Contains(err.Error(), "--name") {
+		t.Errorf("send with a taken name: %v, want ErrNameTaken and a hint", err)
+	}
+
+	out, err = runCLI(t, "", "--config", cfg, "who", addr, "--name", "peek")
+	if err != nil || out != "bob\n" {
+		t.Errorf("who: err = %v, output = %q, want just bob", err, out)
+	}
+	out, err = runCLI(t, "", "--config", cfg, "who", addr, "--name", "peek", "--json")
+	var who struct {
+		Room  string
+		Names []string
+	}
+	if err != nil || json.Unmarshal([]byte(out), &who) != nil || who.Room != "#general" || !reflect.DeepEqual(who.Names, []string{"bob"}) {
+		t.Errorf("who --json: err = %v, output = %q", err, out)
+	}
+
+	out, err = runCLI(t, "", "--config", cfg, "rooms", addr, "--name", "peek")
+	if err != nil || out != "#general 1\n" {
+		t.Errorf("rooms: err = %v, output = %q, want '#general 1' (bob only)", err, out)
+	}
+	out, err = runCLI(t, "", "--config", cfg, "rooms", addr, "--name", "peek", "--json")
+	var rooms []client.RoomInfo
+	if err != nil || json.Unmarshal([]byte(out), &rooms) != nil || len(rooms) != 1 || rooms[0].Members != 1 {
+		t.Errorf("rooms --json: err = %v, output = %q", err, out)
+	}
+
+	if err := os.WriteFile(cfg, []byte(`{"addr":"`+addr+`","name":"ci"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "", "--config", cfg, "send", "from", "memory"); err != nil {
+		t.Fatalf("send with a remembered server: %v", err)
+	}
+	if e := next(protocol.Msg); e.From != "ci" || e.Text != "from memory" {
+		t.Errorf("bob saw %+v, want 'from memory' from ci", e)
+	}
+}
+
+func TestLooksLikeAddr(t *testing.T) {
+	for s, want := range map[string]bool{"localhost:4000": true, ":4000": true, "[::1]:1": true, "hello": false, "a b": false, "host:": true} {
+		if got := looksLikeAddr(s); got != want {
+			t.Errorf("looksLikeAddr(%q) = %v, want %v", s, got, want)
+		}
 	}
 }

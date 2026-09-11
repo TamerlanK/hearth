@@ -54,7 +54,7 @@ the environment, and the environment wins over the built-in default.`,
 	})
 	root.PersistentFlags().String("config", "", "file that remembers the last server and name; default is hearth/config.json under the user config dir")
 	serve, _ := newServeCmd()
-	root.AddCommand(serve, newConnectCmd(), newVersionCmd())
+	root.AddCommand(serve, newConnectCmd(), newSendCmd(), newWhoCmd(), newRoomsCmd(), newVersionCmd())
 	annotate := func(f *pflag.Flag) {
 		f.Usage += " (env: " + envName(f.Name) + ")"
 	}

@@ -219,6 +219,18 @@ func (c *Client) Events() <-chan protocol.Event {
 	return c.events
 }
 
+// Name returns the display name the server currently knows this client by.
+func (c *Client) Name() string {
+	return c.currentName()
+}
+
+// Room returns the room the client is in, with its leading #.
+func (c *Client) Room() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.room
+}
+
 // State reports the current connection state.
 func (c *Client) State() State {
 	return State(c.state.Load())
