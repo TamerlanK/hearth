@@ -38,9 +38,7 @@ func candidates(line []rune, pos int, rooms, users []string) (int, []string) {
 		}
 		pool = append(pool, "/"+closeCommand)
 	case first == "/join" || first == "/who" || first == "/history":
-		for _, r := range rooms {
-			pool = append(pool, r)
-		}
+		pool = append(pool, rooms...)
 		word = "#" + strings.TrimPrefix(word, "#")
 	default:
 		pool = users

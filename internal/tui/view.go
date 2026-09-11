@@ -282,8 +282,10 @@ func (m *Model) overlay() string {
 	for _, spec := range protocol.Commands {
 		rows = append(rows, m.style.overlay.Render(spec.Usage))
 	}
-	rows = append(rows, m.style.overlay.Render("/close"))
-	rows = append(rows, "", m.style.overlay.Render("a bare line is /say, or a private message in a @name tab · Esc closes this"))
+	rows = append(rows,
+		m.style.overlay.Render("/close"),
+		"",
+		m.style.overlay.Render("a bare line is /say, or a private message in a @name tab · Esc closes this"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(overlayEdge(&m.style)).
