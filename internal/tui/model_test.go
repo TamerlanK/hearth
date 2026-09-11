@@ -425,3 +425,80 @@ func TestSidebarRefreshesPeriodically(t *testing.T) {
 		t.Errorf("sidebar order = %q, want the refreshed room list", m.order)
 	}
 }
+
+func TestDMConversationsGetTheirOwnTab(t *testing.T) {
+	m := joined(t, 100, 30)
+	m = feed(t, m, event(protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "psst"}))
+	if m.current != "#general" {
+		t.Fatalf("an incoming DM moved the view to %q", m.current)
+	}
+	if got := texts(m, "@bob"); !equal(got, []string{"privmsg:psst"}) {
+		t.Fatalf("@bob transcript = %q, want the DM", got)
+	}
+	if got := texts(m, "#general"); slices.Contains(got, "privmsg:psst") {
+		t.Error("the DM also landed in the room transcript")
+	}
+	if m.rooms["@bob"].unread != 1 || !strings.Contains(plain(m.View()), "@bob •1") {
+		t.Errorf("no unread badge on the DM tab:\n%s", plain(m.View()))
+	}
+
+	m = feed(t, m, pressed(tea.KeyTab), pressed(tea.KeyTab))
+	if want := []item{{"#general", false}, {"#golang", false}, {"@bob", false}, {"bob", true}}; !slices.Equal(m.items(), want) {
+		t.Fatalf("items = %v, want %v", m.items(), want)
+	}
+	m = feed(t, m, pressed(tea.KeyDown), pressed(tea.KeyDown), pressed(tea.KeyEnter))
+	if m.current != "@bob" || m.room != "#general" {
+		t.Fatalf("after Enter on @bob: current = %q, room = %q", m.current, m.room)
+	}
+	if m.rooms["@bob"].unread != 0 {
+		t.Error("opening the tab did not clear its unread count")
+	}
+	if got := m.outgoing(protocol.Command{Name: "say", Text: "hi"}); got.Name != "msg" || got.Args[0] != "bob" || got.Text != "hi" {
+		t.Errorf("a bare line in a DM tab became %+v, want /msg bob hi", got)
+	}
+	if got := m.outgoing(protocol.Command{Name: "join", Args: []string{"#ops"}}); got.Name != "join" {
+		t.Errorf("a command in a DM tab was rewritten to %+v", got)
+	}
+	if got := plain(m.View()); !strings.Contains(got, "@bob · in #general") {
+		t.Errorf("status bar does not say where the DM is viewed from:\n%s", got)
+	}
+
+	m = feed(t, m, pressed(tea.KeyShiftTab), pressed(tea.KeyShiftTab), typed("/close"), pressed(tea.KeyEnter))
+	if m.current != "#general" || slices.Contains(m.order, "@bob") {
+		t.Errorf("after /close: current = %q, order = %q", m.current, m.order)
+	}
+	m = feed(t, m, typed("/close"), pressed(tea.KeyEnter))
+	if got := texts(m, "#general"); !strings.HasPrefix(got[len(got)-1], "error:only a @name") {
+		t.Errorf("/close on a room gave %q", got[len(got)-1])
+	}
+}
+
+func TestSendingADMOpensItsTabAndSurvivesRefresh(t *testing.T) {
+	m := joined(t, 100, 30)
+	m = feed(t, m, event(protocol.Event{Kind: protocol.PrivMsg, From: "alice", To: "carol", Text: "hey"}))
+	if m.current != "@carol" {
+		t.Fatalf("sending a DM left the view at %q", m.current)
+	}
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Rooms, Names: []string{"#general (2)"}}))
+	if !slices.Contains(m.order, "@carol") {
+		t.Error("a rooms refresh dropped the DM tab")
+	}
+	if slices.Contains(m.order, "#golang") {
+		t.Error("a rooms refresh kept a room the server no longer has")
+	}
+	m = feed(t, m, tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.current != "@carol" {
+		t.Errorf("Ctrl+N with one room and one DM moved to %q", m.current)
+	}
+}
+
+func TestPickingAUserOpensADM(t *testing.T) {
+	m := joined(t, 100, 30)
+	m = feed(t, m, pressed(tea.KeyTab), pressed(tea.KeyTab), pressed(tea.KeyDown), pressed(tea.KeyDown), pressed(tea.KeyEnter))
+	if m.current != "@bob" {
+		t.Fatalf("Enter on bob opened %q", m.current)
+	}
+	if got := texts(m, "@bob"); len(got) != 0 {
+		t.Errorf("a fresh DM tab has %q in it", got)
+	}
+}

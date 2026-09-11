@@ -122,23 +122,36 @@ func pad(mark string) string {
 func (m *Model) sidebar() string {
 	w := m.view.sidebar
 	lines := []string{m.style.sidebarTitle.Render(fit("Rooms", w))}
-	for i, name := range m.order {
-		r := m.rooms[name]
+	items := m.items()
+	for i, it := range items {
+		if it.user {
+			break
+		}
+		r := m.rooms[it.name]
 		style := m.style.room
-		if name == m.current {
+		if isDM(it.name) {
+			style = m.style.private
+		}
+		if it.name == m.current {
 			style = m.style.roomCurrent
 		}
 		if m.focus == paneRooms && i == m.choice {
 			style = style.Underline(true)
 		}
-		lines = append(lines, style.Render(roomLabel(name, r.members, r.unread, name == m.current, w)))
+		lines = append(lines, style.Render(roomLabel(it.name, r.members, r.unread, it.name == m.current, w)))
 	}
-	lines = append(lines, fit("", w), m.style.sidebarTitle.Render(fit("Users in "+m.current, w)))
-	if r, ok := m.rooms[m.current]; ok {
+	lines = append(lines, fit("", w), m.style.sidebarTitle.Render(fit("Users in "+m.room, w)))
+	if r, ok := m.rooms[m.room]; ok {
+		at := len(m.order)
 		for _, u := range r.users {
 			style := m.style.user
 			if u == m.me {
 				style = m.style.self
+			} else {
+				if m.focus == paneRooms && at == m.choice {
+					style = style.Underline(true)
+				}
+				at++
 			}
 			lines = append(lines, style.Render(fit(" "+m.label(u), w)))
 		}
@@ -178,7 +191,9 @@ func (m *Model) entry() string {
 
 func (m *Model) statusBar() string {
 	parts := []string{m.connection() + " as " + m.me}
-	if m.current != "" {
+	if isDM(m.current) {
+		parts = append(parts, m.current+" · in "+m.room)
+	} else if m.current != "" {
 		parts = append(parts, m.current)
 	}
 	parts = append(parts, "Tab: panes", "?: help")
@@ -215,7 +230,8 @@ var helpKeys = [][2]string{
 	{"Enter", "send the line"},
 	{"Tab / Shift+Tab", "cycle input, messages, rooms"},
 	{"Ctrl+N / Ctrl+P", "next / previous room"},
-	{"Up / Down", "command history, scroll or pick a room"},
+	{"Up / Down", "command history, scroll, or pick a room or user"},
+	{"Enter on a user", "open a private conversation (@name tab)"},
 	{"PgUp / PgDn", "scroll the transcript"},
 	{"Ctrl+L", "clear the current room"},
 	{"? / F1", "toggle this help"},
@@ -233,7 +249,8 @@ func (m *Model) overlay() string {
 	for _, spec := range protocol.Commands {
 		rows = append(rows, m.style.overlay.Render(spec.Usage))
 	}
-	rows = append(rows, "", m.style.overlay.Render("a bare line is /say · Esc closes this"))
+	rows = append(rows, m.style.overlay.Render("/close"))
+	rows = append(rows, "", m.style.overlay.Render("a bare line is /say, or a private message in a @name tab · Esc closes this"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(overlayEdge(&m.style)).

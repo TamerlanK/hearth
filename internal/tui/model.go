@@ -45,6 +45,22 @@ type sentMsg struct {
 
 type quitMsg struct{}
 
+type item struct {
+	name string
+	user bool
+}
+
+func isDM(name string) bool {
+	return strings.HasPrefix(name, "@")
+}
+
+func dmTab(e protocol.Event, me string) string {
+	if e.From == me {
+		return "@" + e.To
+	}
+	return "@" + e.From
+}
+
 type roomState struct {
 	name    string
 	members int
@@ -58,6 +74,7 @@ type Model struct {
 	events  <-chan protocol.Event
 	addr    string
 	me      string
+	room    string
 	current string
 	order   []string
 	rooms   map[string]*roomState
@@ -277,14 +294,29 @@ func (m *Model) cycle(by int) {
 	}
 	m.input.Blur()
 	if m.focus == paneRooms {
-		m.choice = max(0, slices.Index(m.order, m.current))
+		m.choice = max(0, slices.IndexFunc(m.items(), func(it item) bool { return !it.user && it.name == m.current }))
 	}
+}
+
+func (m *Model) items() []item {
+	items := make([]item, 0, len(m.order))
+	for _, name := range m.order {
+		items = append(items, item{name: name})
+	}
+	if r, ok := m.rooms[m.room]; ok {
+		for _, u := range r.users {
+			if u != m.me {
+				items = append(items, item{name: u, user: true})
+			}
+		}
+	}
+	return items
 }
 
 func (m *Model) scroll(by int) {
 	switch m.focus {
 	case paneRooms:
-		m.choice = min(max(0, len(m.order)-1), max(0, m.choice+by))
+		m.choice = min(max(0, len(m.items())-1), max(0, m.choice+by))
 	case paneMessages:
 		if by < 0 {
 			m.body.ScrollUp(-by)
@@ -318,10 +350,15 @@ func (m *Model) browse(by int) {
 }
 
 func (m *Model) pick() tea.Cmd {
-	if m.choice < 0 || m.choice >= len(m.order) {
+	items := m.items()
+	if m.choice < 0 || m.choice >= len(items) {
 		return nil
 	}
-	return m.join(m.order[m.choice])
+	it := items[m.choice]
+	if it.user {
+		return m.open("@" + it.name)
+	}
+	return m.open(it.name)
 }
 
 func (m *Model) step(by int) tea.Cmd {
@@ -329,14 +366,38 @@ func (m *Model) step(by int) tea.Cmd {
 		return nil
 	}
 	at := slices.Index(m.order, m.current)
-	return m.join(m.order[(at+by+len(m.order))%len(m.order)])
+	return m.open(m.order[(at+by+len(m.order))%len(m.order)])
 }
 
-func (m *Model) join(room string) tea.Cmd {
-	if room == "" || room == m.current {
+func (m *Model) open(name string) tea.Cmd {
+	if name == "" || name == m.current {
 		return nil
 	}
-	return m.guard(protocol.Command{Name: "join", Args: []string{room}})
+	if !isDM(name) {
+		return m.guard(protocol.Command{Name: "join", Args: []string{name}})
+	}
+	m.touch(name)
+	m.show(name)
+	return nil
+}
+
+func (m *Model) show(name string) {
+	m.current = name
+	r := m.touch(name)
+	r.unread = 0
+	m.follow, m.pending = true, false
+	m.redraw()
+}
+
+func (m *Model) closeTab() {
+	if !isDM(m.current) {
+		m.fail("only a @name conversation can be closed; /join another room to leave this one")
+		return
+	}
+	gone := m.current
+	delete(m.rooms, gone)
+	m.order = slices.DeleteFunc(m.order, func(n string) bool { return n == gone })
+	m.show(m.room)
 }
 
 func (m *Model) wipe() {
@@ -354,6 +415,10 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.input.Reset()
 	m.remember(line)
+	if line == "/close" {
+		m.closeTab()
+		return nil
+	}
 	cmd, err := protocol.TextCodec{}.Decode([]byte(line))
 	if err != nil {
 		m.fail(err.Error())
@@ -366,7 +431,14 @@ func (m *Model) submit() tea.Cmd {
 		m.help = true
 		return nil
 	}
-	return m.guard(cmd)
+	return m.guard(m.outgoing(cmd))
+}
+
+func (m *Model) outgoing(cmd protocol.Command) protocol.Command {
+	if cmd.Name == "say" && isDM(m.current) {
+		return protocol.Command{Name: "msg", Args: []string{m.current[1:]}, Text: cmd.Text}
+	}
+	return cmd
 }
 
 func (m *Model) guard(cmd protocol.Command) tea.Cmd {
@@ -429,12 +501,15 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 		}
 	case protocol.Join:
 		if e.From == m.me {
-			m.current = e.Room
-			m.touch(e.Room).unread = 0
-			m.follow, m.pending = true, false
+			m.room = e.Room
+			m.show(e.Room)
 			cmd = m.refresh()
 		}
 		m.enter(e.Room, e.From)
+	case protocol.PrivMsg:
+		if e.From == m.me {
+			m.open(dmTab(e, m.me))
+		}
 	case protocol.Leave:
 		m.exit(e.Room, e.From)
 	case protocol.Nick:
@@ -482,15 +557,14 @@ func (m *Model) list(entries []string) {
 			r.members = n
 		}
 	}
-	m.order = slices.DeleteFunc(m.order, func(name string) bool {
-		return !seen[name] && name != m.current
-	})
+	stale := func(name string) bool { return !seen[name] && name != m.current && !isDM(name) }
+	m.order = slices.DeleteFunc(m.order, stale)
 	for name := range m.rooms {
-		if !seen[name] && name != m.current {
+		if stale(name) {
 			delete(m.rooms, name)
 		}
 	}
-	m.choice = min(m.choice, max(0, len(m.order)-1))
+	m.choice = min(m.choice, max(0, len(m.items())-1))
 }
 
 func (m *Model) touch(name string) *roomState {
@@ -532,7 +606,9 @@ func (m *Model) rename(room, from, to string) {
 
 func (m *Model) record(e protocol.Event) {
 	room := e.Room
-	if e.Kind == protocol.PrivMsg || e.Kind == protocol.Who || room == "" {
+	if e.Kind == protocol.PrivMsg {
+		room = dmTab(e, m.me)
+	} else if e.Kind == protocol.Who || room == "" {
 		room = m.current
 	}
 	r := m.touch(room)
