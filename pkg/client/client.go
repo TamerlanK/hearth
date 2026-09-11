@@ -1,3 +1,8 @@
+// Package client is a Go client for a hearth server. It speaks the JSON form
+// of the hearth/1 protocol, delivers every server event on a bounded channel,
+// matches the reply to Join, Nick, Who and Rooms with the request that caused
+// it, and can reconnect with jittered exponential backoff when the connection
+// drops. A longer guide is docs/CLIENT.md in the repository.
 package client
 
 import (
@@ -18,6 +23,8 @@ import (
 	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
+// Errors a [Client] returns. ErrNameTaken and ErrRateLimited are matched with
+// errors.Is against the [ServerError] the server actually sent.
 var (
 	ErrClosed       = errors.New("client closed")
 	ErrNameTaken    = errors.New("name taken")
@@ -26,6 +33,8 @@ var (
 	ErrNegotiation  = errors.New("server did not accept the json protocol")
 )
 
+// EventBuffer is the capacity of the channel returned by [Client.Events].
+// When it is full the oldest event is dropped and counted in [Stats].
 const (
 	EventBuffer        = 256
 	defaultDialTimeout = 10 * time.Second
@@ -33,14 +42,18 @@ const (
 	defaultBackoffMax  = 30 * time.Second
 )
 
+// ServerError is an error event the server sent in reply to a request. It
+// matches [ErrNameTaken] and [ErrRateLimited] through errors.Is.
 type ServerError struct {
 	Text string
 }
 
+// Error returns the server's text prefixed with "server: ".
 func (e *ServerError) Error() string {
 	return "server: " + e.Text
 }
 
+// Is reports whether the server's text corresponds to the sentinel target.
 func (e *ServerError) Is(target error) bool {
 	switch target {
 	case ErrNameTaken:
@@ -51,8 +64,11 @@ func (e *ServerError) Is(target error) bool {
 	return false
 }
 
+// State is the connection state reported by [Client.State].
 type State int32
 
+// The states a Client moves through. Reconnecting is reached only when
+// [Options].Reconnect is set; Closed is final.
 const (
 	Connecting State = iota
 	Connected
@@ -60,6 +76,7 @@ const (
 	Closed
 )
 
+// String returns the lower-case name of the state.
 func (s State) String() string {
 	switch s {
 	case Connecting:
@@ -74,31 +91,51 @@ func (s State) String() string {
 	return "state(" + strconv.Itoa(int(s)) + ")"
 }
 
+// BackoffConfig bounds the delay between reconnect attempts. Each attempt
+// waits a random duration between half the current delay and all of it, and
+// the delay doubles from Min until it reaches Max.
 type BackoffConfig struct {
 	Min time.Duration
 	Max time.Duration
 }
 
+// Options configures [Dial]. Name is required; every other field has a
+// default.
 type Options struct {
-	Name        string
-	Room        string
+	// Name is the display name to claim: 1-20 characters, no spaces.
+	Name string
+	// Room is joined right after connecting; empty means the server's default.
+	Room string
+	// DialTimeout bounds the TCP dial plus the name handshake; 10s when zero.
 	DialTimeout time.Duration
-	Logger      *slog.Logger
-	Reconnect   bool
-	Backoff     BackoffConfig
+	// Logger receives connection and reconnect events; discarded when nil.
+	Logger *slog.Logger
+	// Reconnect redials with backoff when the connection drops instead of
+	// closing the client.
+	Reconnect bool
+	// Backoff bounds the reconnect delay; 500ms to 30s when zero.
+	Backoff BackoffConfig
 }
 
+// RoomInfo is one entry from [Client.Rooms].
 type RoomInfo struct {
 	Name    string
 	Members int
 }
 
+// Stats are counters a [Client] keeps for its lifetime: events dropped from
+// the Events channel, reconnects that succeeded, and the reconnect attempt in
+// progress (zero while connected).
 type Stats struct {
 	Dropped    uint64
 	Reconnects uint64
 	Attempt    uint64
 }
 
+// A Client is one connection to a hearth server, created by [Dial]. Its
+// methods are safe for concurrent use. Join, Nick, Who and Rooms wait for the
+// server's reply and run one at a time, because hearth/1 has no request ids
+// to tell concurrent replies apart.
 type Client struct {
 	addr   string
 	opts   Options
@@ -132,6 +169,9 @@ type result struct {
 	err   error
 }
 
+// Dial connects to addr, negotiates the JSON protocol, claims opts.Name and
+// joins opts.Room. ctx bounds only the dial and handshake; the connection
+// outlives it and is released by [Client.Close].
 func Dial(ctx context.Context, addr string, opts Options) (*Client, error) {
 	if opts.Name == "" {
 		return nil, errors.New("dial: Options.Name is required")
@@ -172,24 +212,35 @@ func Dial(ctx context.Context, addr string, opts Options) (*Client, error) {
 	return c, nil
 }
 
+// Events returns the channel every server event is delivered on. It is
+// closed after [Client.Close], or when the connection drops and Reconnect is
+// off. A consumer that falls behind loses the oldest events; see [EventBuffer].
 func (c *Client) Events() <-chan protocol.Event {
 	return c.events
 }
 
+// State reports the current connection state.
 func (c *Client) State() State {
 	return State(c.state.Load())
 }
 
+// Stats returns a snapshot of the client's counters.
 func (c *Client) Stats() Stats {
 	return Stats{Dropped: c.dropped.Load(), Reconnects: c.reconnects.Load(), Attempt: c.attempt.Load()}
 }
 
+// Close disconnects, stops any reconnect in progress and waits for the reader
+// to exit. It always returns nil and is safe to call more than once.
 func (c *Client) Close() error {
 	c.cancel()
 	<-c.done
 	return nil
 }
 
+// Send writes cmd and returns without waiting for a reply. ctx bounds the
+// write alone: cancelling it interrupts a blocked write and leaves the
+// connection usable. Send returns [ErrNotConnected] while a reconnect is in
+// progress and [ErrClosed] after Close.
 func (c *Client) Send(ctx context.Context, cmd protocol.Command) error {
 	c.mu.Lock()
 	conn := c.conn
@@ -203,14 +254,18 @@ func (c *Client) Send(ctx context.Context, cmd protocol.Command) error {
 	return c.write(ctx, conn, cmd)
 }
 
+// Say sends text to the current room.
 func (c *Client) Say(ctx context.Context, text string) error {
 	return c.Send(ctx, protocol.Command{Name: "say", Text: text})
 }
 
+// PrivMsg sends text to one user by name.
 func (c *Client) PrivMsg(ctx context.Context, to, text string) error {
 	return c.Send(ctx, protocol.Command{Name: "msg", Args: []string{to}, Text: text})
 }
 
+// Join moves to room, with or without its leading #, and waits for the
+// server to confirm.
 func (c *Client) Join(ctx context.Context, room string) error {
 	room = roomName(room)
 	me := c.currentName()
@@ -226,6 +281,7 @@ func (c *Client) Join(ctx context.Context, room string) error {
 	return nil
 }
 
+// Nick changes the display name and waits for the server to confirm.
 func (c *Client) Nick(ctx context.Context, name string) error {
 	me := c.currentName()
 	if name == me {
@@ -243,6 +299,7 @@ func (c *Client) Nick(ctx context.Context, name string) error {
 	return nil
 }
 
+// Who returns the names of everyone in the current room, sorted.
 func (c *Client) Who(ctx context.Context) ([]string, error) {
 	e, err := c.request(ctx, protocol.Command{Name: "who"}, func(e protocol.Event) bool {
 		return e.Kind == protocol.Who
@@ -253,6 +310,7 @@ func (c *Client) Who(ctx context.Context) ([]string, error) {
 	return e.Names, nil
 }
 
+// Rooms lists every room on the server with its member count.
 func (c *Client) Rooms(ctx context.Context) ([]RoomInfo, error) {
 	e, err := c.request(ctx, protocol.Command{Name: "rooms"}, func(e protocol.Event) bool {
 		return e.Kind == protocol.Rooms

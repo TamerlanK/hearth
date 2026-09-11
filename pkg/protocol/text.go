@@ -9,8 +9,12 @@ import (
 
 const clockLayout = "15:04"
 
+// TextCodec is the default encoding, usable from telnet: a bare line is a
+// say, a line starting with / is a command, and every event renders as one
+// human-readable line.
 type TextCodec struct{}
 
+// Encode writes e to w as one readable line.
 func (TextCodec) Encode(w io.Writer, e Event) error {
 	line, err := renderText(e)
 	if err != nil {
@@ -25,6 +29,7 @@ func (TextCodec) Encode(w io.Writer, e Event) error {
 	return nil
 }
 
+// Decode parses one text line from a client. Command names are case-insensitive.
 func (TextCodec) Decode(line []byte) (Command, error) {
 	if len(line) > MaxLineBytes {
 		return Command{}, ErrLineTooLong

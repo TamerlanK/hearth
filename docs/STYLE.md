@@ -38,10 +38,16 @@ DECISIONS.md       running log of non-obvious choices and why
 
 ## Documentation
 
-- No comments in Go code: no doc comments, no inline comments. Names and
-  structure carry the meaning; anything that needs prose goes in `docs/`.
-- Empty packages keep a bare `doc.go` containing only the `package` clause so
-  the directory stays a Go package.
+- No comments in `internal/` or `cmd/`: no doc comments, no inline comments.
+  Names and structure carry the meaning; anything that needs prose goes in
+  `docs/`. The one exception is a package comment in a `doc.go`, for a package
+  whose shape needs a paragraph to see (`internal/tui` has one).
+- `pkg/` is the published API and follows Go's convention instead: a package
+  comment and a doc comment on every exported identifier, because `go doc` and
+  pkg.go.dev are how a Go library is read. Say what the name cannot; do not
+  restate it. Lint enforces both halves (`revive: exported`).
+- A package with no code yet keeps a bare `doc.go` containing only the
+  `package` clause so the directory stays a Go package.
 - Docs are part of the change: update `docs/` when behaviour or the wire format
   changes, and append to `DECISIONS.md` when a non-obvious choice is made.
 

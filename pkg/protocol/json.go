@@ -8,6 +8,9 @@ import (
 	"unicode/utf8"
 )
 
+// JSONCodec is the encoding a client negotiates with [Hello]: one JSON object
+// per line, {"cmd":...,"args":[...],"text":...} from the client and a
+// serialised [Event] from the server.
 type JSONCodec struct{}
 
 type wireCommand struct {
@@ -16,6 +19,7 @@ type wireCommand struct {
 	Text string   `json:"text,omitempty"`
 }
 
+// Encode writes e to w as one JSON line.
 func (JSONCodec) Encode(w io.Writer, e Event) error {
 	if !KnownKind(e.Kind) {
 		return fmt.Errorf("kind %q: %w", e.Kind, ErrMalformed)
@@ -30,6 +34,7 @@ func (JSONCodec) Encode(w io.Writer, e Event) error {
 	return nil
 }
 
+// Decode parses one JSON line from a client. An empty line is a bare say.
 func (JSONCodec) Decode(line []byte) (Command, error) {
 	if len(line) > MaxLineBytes {
 		return Command{}, ErrLineTooLong
@@ -54,6 +59,7 @@ func (JSONCodec) Decode(line []byte) (Command, error) {
 	return Command{Name: wire.Cmd, Args: wire.Args, Text: wire.Text}, nil
 }
 
+// EncodeCommand writes cmd to w as one JSON line; it is what a client sends.
 func EncodeCommand(w io.Writer, cmd Command) error {
 	if !KnownCommand(cmd.Name) {
 		return fmt.Errorf("%q: %w", cmd.Name, ErrUnknownCommand)
@@ -68,6 +74,7 @@ func EncodeCommand(w io.Writer, cmd Command) error {
 	return nil
 }
 
+// DecodeEvent parses one JSON line from a server; it is what a client reads.
 func DecodeEvent(line []byte) (Event, error) {
 	if len(line) > MaxLineBytes {
 		return Event{}, ErrLineTooLong

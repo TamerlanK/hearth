@@ -558,3 +558,13 @@ lookup*). The regression test is `TestNameIndexFollowsRenameAndLeave`, which
 exercises the two ways the directory could go stale. Revisit only if a second
 owner of names appears, which the architecture rules out.
 
+### D73. `pkg/` carries doc comments; the no-comments rule covers `internal/` and `cmd/`
+The style guide banned comments everywhere, which left `go doc ./pkg/client`
+a bare symbol list under a README badge pointing at pkg.go.dev. For code
+nobody imports the rule is right: names and structure carry the meaning and
+prose lives in `docs/`. For the published packages it hides the one document
+a Go user reads first. `pkg/client` and `pkg/protocol` now have a package
+comment and a comment on every exported identifier, kept to what the name
+cannot say, and `revive`'s `exported` rule enforces it there while a path
+exclusion keeps `internal/` and `cmd/` comment-free. The stuttering check is
+off because `client.Client` follows `http.Client`, not a naming accident.
