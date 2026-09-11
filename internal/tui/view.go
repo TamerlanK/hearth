@@ -124,7 +124,11 @@ func pad(mark string) string {
 
 func (m *Model) sidebar() string {
 	w := m.view.sidebar
-	lines := []string{m.style.sidebarTitle.Render(fit("Rooms", w))}
+	title := m.style.sidebarTitle
+	if m.focus == paneRooms {
+		title = m.style.focused.Bold(true)
+	}
+	lines := []string{title.Render(fit("Rooms", w))}
 	items := m.items()
 	for i, it := range items {
 		if it.user {
@@ -179,13 +183,17 @@ func (m *Model) spine() string {
 
 func (m *Model) rule() string {
 	w := max(1, m.view.messages)
+	line := m.style.divider
+	if m.focus == paneMessages {
+		line = m.style.focused
+	}
 	if !m.pending || w < 20 {
-		return m.style.divider.Render(strings.Repeat("─", w))
+		return line.Render(strings.Repeat("─", w))
 	}
 	pill := " ↓ new messages "
 	left := w - lipgloss.Width(pill) - 2
-	return m.style.divider.Render(strings.Repeat("─", left)) +
-		m.style.pill.Render(pill) + m.style.divider.Render("──")
+	return line.Render(strings.Repeat("─", left)) +
+		m.style.pill.Render(pill) + line.Render("──")
 }
 
 func (m *Model) entry() string {
@@ -199,13 +207,34 @@ func (m *Model) statusBar() string {
 	} else if m.current != "" {
 		parts = append(parts, m.current)
 	}
-	parts = append(parts, "Tab: panes", "?: help")
+	if unread, mentions := m.unseen(); unread > 0 {
+		s := strconv.Itoa(unread) + " unread"
+		if mentions > 0 {
+			s += " (" + strconv.Itoa(mentions) + " @)"
+		}
+		parts = append(parts, s)
+	}
+	if m.lastErr != "" {
+		parts = append(parts, "! "+m.lastErr)
+	}
+	parts = append(parts, "focus: "+m.focus.String(), "?: help")
 	bar := " " + strings.Join(parts, " · ")
 	style := m.style.status
-	if m.link != client.Connected {
+	if m.link != client.Connected || m.lastErr != "" {
 		style = m.style.statusAlert
 	}
 	return style.Render(fit(bar, m.view.width))
+}
+
+func (p pane) String() string {
+	switch p {
+	case paneMessages:
+		return "messages"
+	case paneRooms:
+		return "rooms"
+	default:
+		return "input"
+	}
 }
 
 func (m *Model) connection() string {

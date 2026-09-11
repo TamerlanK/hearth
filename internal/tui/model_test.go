@@ -554,3 +554,46 @@ func TestMentionsAreCountedAndRingTheBell(t *testing.T) {
 		t.Errorf("viewing the room left unread = %d, mentions = %d", r.unread, r.mentions)
 	}
 }
+
+func TestStatusBarShowsUnreadFocusAndTheLastError(t *testing.T) {
+	m := joined(t, 100, 30)
+	bar := func() string {
+		rows := lines(m.View())
+		return rows[len(rows)-1]
+	}
+	if got := bar(); !strings.Contains(got, "focus: input") || strings.Contains(got, "unread") {
+		t.Fatalf("initial status bar = %q", got)
+	}
+	m = feed(t, m,
+		event(protocol.Event{Kind: protocol.Msg, Room: "#golang", From: "carol", Text: "one"}),
+		event(protocol.Event{Kind: protocol.Msg, Room: "#golang", From: "carol", Text: "alice, two"}),
+		event(protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "three"}),
+	)
+	if got := bar(); !strings.Contains(got, "3 unread (2 @)") {
+		t.Errorf("status bar = %q, want the unread and mention totals", got)
+	}
+	m = feed(t, m, pressed(tea.KeyTab))
+	if got := bar(); !strings.Contains(got, "focus: messages") {
+		t.Errorf("status bar = %q, want focus: messages", got)
+	}
+	m = feed(t, m, pressed(tea.KeyTab))
+	if got := bar(); !strings.Contains(got, "focus: rooms") {
+		t.Errorf("status bar = %q, want focus: rooms", got)
+	}
+	m = feed(t, m, pressed(tea.KeyTab), typed("/dance"), pressed(tea.KeyEnter))
+	if got := bar(); !strings.Contains(got, "! ") || !strings.Contains(got, "dance") {
+		t.Errorf("status bar = %q, want the last error", got)
+	}
+	m = feed(t, m, typed("hello"), pressed(tea.KeyEnter))
+	if got := bar(); strings.Contains(got, "! ") {
+		t.Errorf("status bar = %q, want the error cleared by the next line", got)
+	}
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Error, Text: "name taken"}))
+	if got := bar(); !strings.Contains(got, "! name taken") {
+		t.Errorf("status bar = %q, want a server error surfaced", got)
+	}
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Join, Room: "#golang", From: "alice"}))
+	if got := bar(); !strings.Contains(got, "1 unread (1 @)") {
+		t.Errorf("status bar = %q, want only the DM left unread after viewing #golang", got)
+	}
+}

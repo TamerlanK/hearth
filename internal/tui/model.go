@@ -88,6 +88,7 @@ type Model struct {
 	choice  int
 	help    bool
 	bell    bool
+	lastErr string
 	follow  bool
 	pending bool
 	past    []string
@@ -426,6 +427,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.input.Reset()
 	m.comp = completion{}
+	m.lastErr = ""
 	m.remember(line)
 	if line == "/"+closeCommand {
 		m.closeTab()
@@ -492,7 +494,18 @@ func (m *Model) note(text string) {
 }
 
 func (m *Model) fail(text string) {
+	m.lastErr = text
 	m.record(protocol.Event{Kind: protocol.Error, Text: text, Time: time.Now()})
+}
+
+func (m *Model) unseen() (unread, mentions int) {
+	for name, r := range m.rooms {
+		if name != m.current {
+			unread += r.unread
+			mentions += r.mentions
+		}
+	}
+	return unread, mentions
 }
 
 func (m *Model) apply(e protocol.Event) tea.Cmd {
@@ -535,6 +548,8 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 		}
 	case protocol.Pong:
 		e.Text = "pong"
+	case protocol.Error:
+		m.lastErr = e.Text
 	}
 	m.record(e)
 	if m.bell && m.mentioned(e) {
