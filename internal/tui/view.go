@@ -228,7 +228,8 @@ func overlayEdge(s *styles) lipgloss.TerminalColor {
 
 var helpKeys = [][2]string{
 	{"Enter", "send the line"},
-	{"Tab / Shift+Tab", "cycle input, messages, rooms"},
+	{"Tab", "complete a /command, name or room; again to cycle matches"},
+	{"Tab / Shift+Tab", "on an empty line: cycle input, messages, rooms"},
 	{"Ctrl+N / Ctrl+P", "next / previous room"},
 	{"Up / Down", "command history, scroll, or pick a room or user"},
 	{"Enter on a user", "open a private conversation (@name tab)"},

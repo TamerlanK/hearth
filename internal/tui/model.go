@@ -89,6 +89,7 @@ type Model struct {
 	recall  int
 	ticks   int
 	asked   map[protocol.Kind]bool
+	comp    completion
 	view    layout
 	style   styles
 	body    viewport.Model
@@ -242,6 +243,10 @@ func (m *Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "tab":
+		if m.focus == paneInput && m.input.Value() != "" {
+			m.complete()
+			return m, nil
+		}
 		m.cycle(1)
 		return m, nil
 	case "shift+tab":
@@ -281,6 +286,7 @@ func (m *Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.focus != paneInput {
 		return m, nil
 	}
+	m.comp = completion{}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
@@ -414,8 +420,9 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	m.input.Reset()
+	m.comp = completion{}
 	m.remember(line)
-	if line == "/close" {
+	if line == "/"+closeCommand {
 		m.closeTab()
 		return nil
 	}

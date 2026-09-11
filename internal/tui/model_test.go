@@ -246,7 +246,7 @@ func TestPanesAndOverlay(t *testing.T) {
 	if m.input.Value() != "?" {
 		t.Fatalf("input = %q, want ?", m.input.Value())
 	}
-	m = feed(t, m, pressed(tea.KeyTab))
+	m = feed(t, m, pressed(tea.KeyBackspace), pressed(tea.KeyTab))
 	if m.focus != paneMessages || m.input.Focused() {
 		t.Fatalf("Tab left focus at %v (input focused: %v)", m.focus, m.input.Focused())
 	}
