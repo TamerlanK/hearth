@@ -244,9 +244,10 @@ make release-dry   # goreleaser snapshot into dist/
 CI runs lint, the race test matrix on three OSes and two Go versions, a fuzz
 smoke, cross-compilation, `govulncheck` and a Docker build. Releases are
 tag-driven: `git tag v0.1.0 && git push origin v0.1.0` builds six platforms
-and pushes the image. Conventions for contributors are in
-[CONTRIBUTING.md](CONTRIBUTING.md) and [CLAUDE.md](CLAUDE.md); the changelog
-is [CHANGELOG.md](CHANGELOG.md).
+and pushes the image. How to get a change in is
+[CONTRIBUTING.md](CONTRIBUTING.md), the house style is
+[docs/STYLE.md](docs/STYLE.md), and the changelog is
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
 

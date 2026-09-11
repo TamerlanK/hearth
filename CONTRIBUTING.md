@@ -6,9 +6,10 @@ feature".
 
 ## Before you start
 
-- Read [CLAUDE.md](CLAUDE.md). It is the style guide, including the rules that
-  surprise people: no comments in Go code, standard library first, a closed
-  list of allowed dependencies, every blocking call takes a `context.Context`.
+- Read [docs/STYLE.md](docs/STYLE.md). It is the style guide, including the
+  rules that surprise people: no comments in Go code, standard library first, a
+  closed list of allowed dependencies, every blocking call takes a
+  `context.Context`.
 - Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) if you are touching
   `internal/server` or `pkg/client`, and [docs/PROTOCOL.md](docs/PROTOCOL.md)
   if you are touching the wire format.

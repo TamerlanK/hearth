@@ -532,3 +532,15 @@ the GitHub Release notes.
 version command now falls back to the module version and the `vcs.revision`
 and `vcs.time` settings from the binary's build info, and only when the ldflag
 value is still the default, so goreleaser builds are unchanged.
+
+### D71. The style guide is `docs/STYLE.md`; `CLAUDE.md` only points at it
+The conventions were written in `CLAUDE.md`, and `CONTRIBUTING.md` sent human
+contributors there to read them. That asks a person to take their house style
+out of a file addressed to a coding agent, and it couples a document the
+project owns to one vendor's filename. The rules now live in `docs/STYLE.md`,
+addressed to whoever is making the change; `CLAUDE.md` stays as a short
+pointer to it plus the reading order for an agent, which is all an agent
+instruction file should be. A second agent's convention file can be added the
+same way without the style guide moving again. Revisit if the two audiences
+ever need genuinely different rules, which would be a sign the rules are
+wrong.
