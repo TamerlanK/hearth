@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"reflect"
 	"runtime/debug"
 	"strings"
@@ -246,5 +247,158 @@ func TestFromBuildInfo(t *testing.T) {
 				t.Errorf("fromBuildInfo() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewLogger(t *testing.T) {
+	tests := []struct {
+		name, format, level string
+		wantErr             string
+		wantLine            string
+	}{
+		{name: "text info", format: "text", level: "info", wantLine: "msg=hello"},
+		{name: "json debug", format: "JSON", level: "debug", wantLine: `"msg":"hello"`},
+		{name: "bad level", format: "text", level: "loud", wantErr: `parse --log-level "loud"`},
+		{name: "bad format", format: "xml", level: "info", wantErr: `unknown --log-format "xml"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			log, err := newLogger(&out, tt.format, tt.level)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newLogger: %v", err)
+			}
+			log.Info("hello")
+			if !strings.Contains(out.String(), tt.wantLine) {
+				t.Errorf("output %q does not contain %q", out.String(), tt.wantLine)
+			}
+		})
+	}
+}
+
+func TestServeListenErrors(t *testing.T) {
+	ln, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	busy := ln.Addr().String()
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"chat port busy", []string{"--addr", busy}, "listen on " + busy},
+		{"metrics port busy", []string{"--addr", "127.0.0.1:0", "--metrics-addr", busy}, "listen on " + busy + " for metrics"},
+		{"bad log level", []string{"--addr", "127.0.0.1:0", "--log-level", "loud"}, "parse --log-level"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := newRootCmd()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs(append([]string{"serve"}, tt.args...))
+			err := root.ExecuteContext(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServeRunsAndShutsDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logR, logW := io.Pipe()
+	root := newRootCmd()
+	root.SetOut(io.Discard)
+	root.SetErr(logW)
+	root.SetArgs([]string{"serve", "--addr", "127.0.0.1:0", "--metrics-addr", "127.0.0.1:0", "--log-format", "json"})
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- root.ExecuteContext(ctx)
+		if err := logW.Close(); err != nil {
+			t.Errorf("close log pipe: %v", err)
+		}
+	}()
+
+	logs := make(chan map[string]any)
+	go func() {
+		defer close(logs)
+		sc := bufio.NewScanner(logR)
+		for sc.Scan() {
+			var rec map[string]any
+			if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+				t.Errorf("log line is not JSON: %v\n%s", err, sc.Text())
+				continue
+			}
+			logs <- rec
+		}
+	}()
+	expectLog := func(msg string) map[string]any {
+		t.Helper()
+		for {
+			select {
+			case rec, ok := <-logs:
+				if !ok {
+					t.Fatalf("logs ended before %q", msg)
+				}
+				if rec["msg"] == msg {
+					return rec
+				}
+			case <-time.After(wait):
+				t.Fatalf("no %q log within %s", msg, wait)
+			}
+		}
+	}
+
+	addr, _ := expectLog("hearth listening")["addr"].(string)
+	metricsAddr, _ := expectLog("metrics listening")["metrics_addr"].(string)
+	if addr == "" || metricsAddr == "" {
+		t.Fatalf("startup logs missing addresses: addr=%q metrics_addr=%q", addr, metricsAddr)
+	}
+
+	conn, err := (&net.Dialer{Timeout: wait}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		t.Fatalf("dial chat: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	greeting, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || !strings.Contains(greeting, "Enter a name") {
+		t.Fatalf("greeting = %q, %v", greeting, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+metricsAddr+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("build healthz request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get healthz: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "ok" {
+		t.Fatalf("healthz = %d %q, %v", resp.StatusCode, body, err)
+	}
+
+	cancel()
+	expectLog("hearth stopped")
+	select {
+	case err := <-cmdDone:
+		if err != nil {
+			t.Fatalf("serve returned %v", err)
+		}
+	case <-time.After(wait):
+		t.Fatal("serve did not exit after cancel")
 	}
 }
