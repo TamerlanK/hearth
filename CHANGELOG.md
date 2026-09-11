@@ -5,11 +5,11 @@ All notable changes to hearth. The format follows
 [conventional commits](https://www.conventionalcommits.org/), which is what
 the release workflow groups a GitHub Release's notes by.
 
-No tag has been cut yet: everything below is unreleased and will ship as
-`v0.1.0`. From that tag on, this file is regenerated per release from the
-commits between tags.
-
 ## [Unreleased]
+
+## [0.1.0] - 2026-09-11
+
+First release.
 
 ### Added
 
@@ -56,8 +56,18 @@ commits between tags.
 
 ### Changed
 
+- `internal/server`: the hub keeps a name directory, so registration, `/nick`
+  and `/msg` resolve a name in one map read instead of walking every member of
+  every room. A private message costs the same with 5000 people online as with
+  100 (`BenchmarkPrivateMessage`: 23.8 µs → 157 ns); the 5000-client connect
+  storm went from 378 ms to 282 ms.
+- `pkg/client` and `pkg/protocol` carry doc comments and lint enforces them;
+  the no-comments rule now applies to `internal/` and `cmd/` only.
+- The style guide moved from `CLAUDE.md` to `docs/STYLE.md`; `CLAUDE.md` is a
+  pointer to it.
 - `hearth version` falls back to the module version and VCS revision from the
   binary's build info, so `go install ...@latest` builds report something
   better than `dev`.
 
-[Unreleased]: https://github.com/TamerlanK/hearth/commits/main
+[Unreleased]: https://github.com/TamerlanK/hearth/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/TamerlanK/hearth/releases/tag/v0.1.0

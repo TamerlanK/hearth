@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/github/license/TamerlanK/hearth)](LICENSE)
 
 Hearth is a TCP chat server and terminal client in one static binary, written
-in Go with the standard library and five dependencies. One goroutine
+in Go with the standard library and six dependencies. One goroutine
 owns all chat state and talks to every connection over channels, so there is
 no lock on the hot path and nothing for `-race` to find; a client that stops
 reading loses its own messages and nobody else's. It speaks a line protocol
