@@ -685,3 +685,63 @@ emitted when consecutive events in the ring differ in calendar day, so
 out-of-order timestamps (a history replay after live traffic) produce a
 second separator rather than being silently merged, which is honest about
 what the transcript actually contains.
+
+## 2026-09-11 — Delivery guarantees the docs already promised
+
+### D85. The outbox is one ordered queue with two admission rules
+The outbox was a 32-slot channel that everything went through with a
+non-blocking send, and `--history` defaults to 50: a client joining a room
+with more than 31 messages of history lost the newest ones and the MOTD, on
+every join, and `/history` could never answer in full. Making the channel
+bigger only moves the cliff; blocking the hub on a slow client is the one
+thing the design forbids; a second channel for replies loses the order between
+a join notice and the replay that follows it. So the outbox is now a slice
+under `client.mu` that the writer pops from. `trySend` (room traffic) refuses
+when 32 events are queued and counts the drop exactly as before; `push` (the
+replay, the MOTD, replies to the client's own commands, local errors, the
+shutdown notice) always appends. Both happen inside the hub step that produced
+them, so order is atomic. Memory is bounded from the other side: `readLoop`
+stops reading while the client's own backlog is at 32, so a client that does
+not read cannot make the server hold more than one reply's worth beyond the
+limit, and a `/history` flood is answered at the rate the client drains it.
+The hub still never waits on anything. Revisit if replies ever need to be
+dropped too, which would mean the reader-side throttle is not enough.
+
+### D86. `--timeout` on `send` bounds each confirmation, not the stream
+`hearth send` reading stdin applied `--timeout` (10 s) to the whole command,
+so the documented `journalctl -f | grep ERROR | hearth send` pipeline died
+after ten seconds with `context deadline exceeded`. A stream has no natural
+length, so the only thing a timeout can sensibly bound is the part that can
+hang: the dial and handshake, and the wait for the server to echo each
+message. `who` and `rooms` bound their one request the same way; `tail` keeps
+the old meaning (`--timeout 0` follows until interrupted, anything else stops
+after that long) because for a follower the whole run is the natural unit.
+
+### D87. Keep-alive pings live in `pkg/client`, on by default; `tail` reconnects and starts from now
+The server's `--idle-timeout` (5 minutes) disconnects a client that sends
+nothing, whatever it receives. The TUI survived only because its 10 s room
+poll doubles as a keep-alive; `hearth tail`, a pure reader, exited with status
+0 after five quiet minutes, which is the worst possible behaviour for a
+bridge under a supervisor. The fix belongs in the library, because every
+consumer of `pkg/client` that only reads is exposed: `Options.KeepAlive` sends
+a `ping` after that long without a write (30 s when zero, negative disables,
+following `net.Dialer.KeepAlive`) and consumes exactly one `pong` per ping it
+sent, so a `pong` the caller asked for still arrives. Pongs are fungible, so a
+count is exact accounting. `tail` additionally reconnects with backoff, prints
+only the room it follows plus roomless events (the `#general` leg of the
+handshake and other rooms' notices are not "what happens in a room"), and
+skips `history` events entirely: a bridge that re-emitted the last 50 messages
+on every restart or reconnect would re-fire every alert, and `tail -f` semantics
+are "from now". The load generator sets `KeepAlive: -1` so the benchmark
+traffic stays what the benchmark says it is.
+
+### D88. `.gitattributes` pins LF for every text file
+The tree had none, so a Windows checkout with Git's default
+`core.autocrlf=true` rewrote every text file as CRLF: `gofmt -l` flagged all
+45 Go files and the TUI golden test compared a CRLF file against LF output,
+and `make check` — the gate every document names — failed on a clean clone.
+`.editorconfig` already said `end_of_line = lf` but editors are not what
+writes a checkout. `* text=auto eol=lf` makes the working tree match the
+object store on every platform; `*.gif binary` keeps the demo out of the
+heuristic. Fixing the golden test to tolerate `\r\n` would have hidden the
+symptom and left `gofmt` broken.

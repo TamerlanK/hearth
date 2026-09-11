@@ -25,8 +25,10 @@ and the profile that says where the rest of the time goes is in the repo.
 - **Two encodings, one semantics.** Type into `telnet`, or send
   `HELLO hearth/1 json` first and get one JSON object per line.
 - **No head-of-line blocking.** Fan-out never blocks the hub. A slow client's
-  outbox fills, its events are dropped and counted, and it is disconnected
-  after 100 drops in a row.
+  outbox fills, room traffic to it is dropped and counted, and it is
+  disconnected after 100 drops in a row. Replies to its own commands, the
+  history replay and the MOTD are never dropped: the server stops reading
+  that client's input until they have gone out instead.
 - **Hardened by default.** Per-client rate limit checked before decoding, a
   per-address connection cap, line and message caps, handshake and idle
   timeouts, control characters stripped, panics contained to one connection.
@@ -129,7 +131,10 @@ rings (`--bell=false` to silence it).
 
 Against a server with TLS or a token, add `--tls` (plus `--tls-ca ca.pem`, or
 `--tls-insecure` for a self-signed certificate you trust) and `--token`
-(or `HEARTH_TOKEN`). `--log-file chat.log` keeps your own transcript.
+(or `HEARTH_TOKEN`). `--log-file chat.log` keeps your own transcript. Every
+client command pings the server after 30 s without sending anything
+(`--keepalive`, `0` to disable), so a server's `--idle-timeout` never ends a
+quiet session.
 
 `--plain` is a stdin/stdout line client with no UI and no reconnect, for
 scripts:
@@ -171,14 +176,20 @@ hearth who  [host:4000] [--room ops] [--json]
 hearth rooms [host:4000] [--json]
 ```
 
-`tail` is the read side: it prints every event in a room and keeps going, so
-`hearth tail --room alerts | while read -r line; do notify-send "$line"; done`
-is a bridge in one line. `--json` emits the server's objects for `jq`.
+`tail` is the read side: it prints what happens in a room from now on and
+keeps going, so `hearth tail --room alerts | while read -r line; do
+notify-send "$line"; done` is a bridge in one line. It does not replay the
+room's history, shows only that room plus what is addressed to it, keeps the
+connection alive through the server's idle timeout, and reconnects with
+backoff if the server goes away. `--json` emits the server's objects for `jq`.
 
 `send` connects, says the text, waits for the server to echo it back and
 exits: status 0 means the server accepted it. With no text it sends every line
-of standard input, so `journalctl -f | grep ERROR | hearth send --room alerts`
-works. `who` and `rooms` connect briefly as `--name` (the remembered name or
+of standard input for as long as it stays open, so `journalctl -f | grep ERROR
+| hearth send --room alerts` works; `--timeout` (10 s) bounds the connection
+and each confirmation, not the stream. The server's rate limit applies
+(`--rate 5 --burst 10` by default), so a burst above it fails with
+`rate limited`. `who` and `rooms` connect briefly as `--name` (the remembered name or
 your OS user by default), leave you out of the answer, and print one entry per
 line or a JSON document. All three fall back to the remembered server when the
 address is left out; a first argument that parses as `host:port` is the
@@ -188,8 +199,9 @@ address, anything else is text.
 
 One goroutine, the hub, owns every room, name and history entry. Each
 connection gets a reader goroutine that parses lines and a writer goroutine
-that drains a 32-event outbox. All traffic between them is channels; the hub
-never blocks on a client and a client never blocks on a dead hub.
+that drains an outbox in which room traffic is capped at 32 queued events and
+the client's own replies never drop. All traffic between them is channels; the
+hub never blocks on a client and a client never blocks on a dead hub.
 
 ```mermaid
 flowchart LR

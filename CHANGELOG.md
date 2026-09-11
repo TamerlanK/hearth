@@ -44,6 +44,10 @@ the release workflow groups a GitHub Release's notes by.
 - **Server**: `serve --motd` sends a message of the day as system events after
   the history replay.
 - `pkg/client`: `Name` and `Room` accessors.
+- `pkg/client`: `Options.KeepAlive` pings the server when the client has been
+  quiet (30 s by default, negative disables) and consumes the pong, so the
+  server's idle timeout never ends a quiet session. Every client command has
+  `--keepalive` (`HEARTH_KEEPALIVE`).
 
 ### Changed
 
@@ -53,6 +57,27 @@ the release workflow groups a GitHub Release's notes by.
 
 ### Fixed
 
+- **Server**: the history replay, the message of the day and every reply to a
+  client's own command went through the same 32-event outbox as room traffic
+  and were dropped when it was full, so at the default settings a client
+  joining a room with more than 31 messages of history lost the newest ones
+  and never saw the MOTD, on every join, `/join` and `/history`. The outbox is
+  now one ordered queue with two admission rules: room traffic still drops at
+  32 queued, replies are never dropped, and the server pauses reading a
+  client whose backlog is at the limit.
+- **CLI**: `hearth send` reading standard input exited with `context deadline
+  exceeded` after `--timeout` (10 s) whatever was left to send, which broke
+  the documented `journalctl -f | … | hearth send` pipeline. The timeout now
+  bounds the connection and each confirmation, not the stream.
+- **CLI**: `hearth tail` exited with status 0 when the server's idle timeout
+  (5 minutes by default) closed a quiet connection. It now keeps the
+  connection alive, reconnects with backoff, prints only the room it follows
+  and what is addressed to it, and no longer replays history, so a restarted
+  bridge does not re-emit old messages.
+- The repository had no `.gitattributes`, so a Windows checkout with Git's
+  default `core.autocrlf=true` failed `make check`: `gofmt` flagged every Go
+  file and the TUI golden test compared CRLF against LF. Text files now check
+  out as LF everywhere.
 - **TUI**: `/who` and `/rooms` typed in the UI showed nothing; the reply is
   now rendered in the transcript. The sidebar re-asks the server every 10 s,
   so member counts no longer go stale until your next join.
