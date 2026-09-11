@@ -81,6 +81,7 @@ hearth serve --addr :4000 --metrics-addr 127.0.0.1:9090 --log-format json
 | `--history`, `--default-room`, `--max-rooms` | `50`, `general`, `64` | Messages kept per room; where everyone starts; rooms that may exist |
 | `--rate`, `--burst` | `5`, `10` | Sustained lines per second per client, and the burst above it |
 | `--max-drops` | `100` | Consecutive dropped events before a client is disconnected |
+| `--motd` | *(none)* | Message of the day sent to each client after it joins; newlines make several lines |
 
 Every flag reads `HEARTH_<FLAG>` from the environment when not given on the
 command line; `hearth serve --help` names the variable next to each flag.

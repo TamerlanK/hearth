@@ -58,10 +58,12 @@ func TestServeFlagsAndEnv(t *testing.T) {
 		{
 			name: "flags",
 			args: []string{"--addr", ":5000", "--max-clients", "7", "--max-per-ip", "2", "--idle-timeout", "90s",
-				"--history", "3", "--rate", "1.5", "--burst", "4", "--default-room", "lobby", "--max-rooms", "0", "--max-drops", "9"},
+				"--history", "3", "--rate", "1.5", "--burst", "4", "--default-room", "lobby", "--max-rooms", "0", "--max-drops", "9",
+				"--motd", "welcome\nrules"},
 			want: func(c server.Config) server.Config {
 				c.MaxClients, c.MaxClientsPerIP, c.IdleTimeout, c.HistorySize = 7, 2, 90*time.Second, 3
 				c.MessagesPerSecond, c.Burst, c.DefaultRoom, c.MaxRooms, c.MaxDropsInARow = 1.5, 4, "lobby", 0, 9
+				c.MOTD = "welcome\nrules"
 				return c
 			},
 			addr: ":5000",

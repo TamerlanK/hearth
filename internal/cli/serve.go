@@ -60,6 +60,7 @@ is going away, and the process waits up to 5s for connections to drain.`,
 	f.Float64Var(&o.cfg.MessagesPerSecond, "rate", 5, "sustained messages per second allowed per client; 0 means unlimited")
 	f.IntVar(&o.cfg.Burst, "burst", 10, "messages a client may send back to back before --rate applies")
 	f.IntVar(&o.cfg.MaxDropsInARow, "max-drops", 100, "consecutive undeliverable events before a slow client is disconnected; 0 means never")
+	f.StringVar(&o.cfg.MOTD, "motd", "", "message of the day sent to a client after it joins; a newline starts a new line")
 	return cmd, o
 }
 

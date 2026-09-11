@@ -26,6 +26,7 @@ type hub struct {
 	defaultRoom string
 	historySize int
 	maxRooms    int
+	motd        []protocol.Event
 
 	rooms    map[string]*room
 	byName   map[string]*client
@@ -51,6 +52,7 @@ func newHub(cfg Config) *hub {
 		defaultRoom: cfg.DefaultRoom,
 		historySize: cfg.HistorySize,
 		maxRooms:    cfg.MaxRooms,
+		motd:        motdEvents(cfg.MOTD),
 		rooms:       make(map[string]*room),
 		byName:      make(map[string]*client),
 		register:    make(chan registration),
@@ -111,6 +113,7 @@ func (h *hub) add(c *client, name string) error {
 	r.members[c] = struct{}{}
 	h.broadcast(r, protocol.Event{Kind: protocol.Join, Room: r.name, From: name, Time: time.Now()})
 	c.trySendAll(replay(r))
+	c.trySendAll(h.motd)
 	return nil
 }
 
@@ -302,6 +305,25 @@ func (h *hub) do(ctx context.Context, c *client, cmd protocol.Command) []protoco
 	case <-ctx.Done():
 		return nil
 	}
+}
+
+func motdLines(motd string) []string {
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(motd, "\r\n", "\n"), "\n") {
+		if line = printable(strings.TrimRight(line, " ")); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func motdEvents(motd string) []protocol.Event {
+	lines := motdLines(motd)
+	events := make([]protocol.Event, 0, len(lines))
+	for _, line := range lines {
+		events = append(events, protocol.Event{Kind: protocol.System, Text: line})
+	}
+	return events
 }
 
 func systemEvent(text string) protocol.Event {

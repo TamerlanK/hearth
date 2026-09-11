@@ -216,7 +216,10 @@ can tell replay from live traffic.
   An event with no `room` (`privmsg`, `system`, `who`, `rooms`, `pong`,
   `error`) goes only to the client it concerns.
 - The server keeps the **last N messages per room in memory** (50 by default,
-  set by the operator), replayed on join and on `history`. Only `say` messages
+  set by the operator), replayed on join and on `history`. After the replay
+  the server may send `system` events the operator configured (a message of
+  the day); a client must not assume the replay is the last thing before live
+  traffic. Only `say` messages
   are recorded; joins, leaves, renames and private messages are not. It is not
   durable: when the last member leaves a room the room and its history are
   discarded, and nothing survives a restart. `history` for a room with nothing

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -930,4 +931,38 @@ func TestNameIndexFollowsRenameAndLeave(t *testing.T) {
 	expectLine(t, again, "* bobby joined #general", wait)
 	send(t, alice, "/msg bobby back")
 	expectLine(t, again, "alice -> bobby: back", wait)
+}
+
+func TestMOTDFollowsTheJoin(t *testing.T) {
+	addr, _, _ := startServer(t, Config{MOTD: "welcome to the test server\r\n\nbe kind \x1b[31m\n"})
+	alice := dial(t, addr, "alice")
+	expectLine(t, alice, "* alice joined #general", wait)
+	expectLine(t, alice, "* welcome to the test server", wait)
+	line := expectLine(t, alice, "* be kind", wait)
+	if strings.Contains(line, "\x1b") {
+		t.Errorf("motd line kept a control sequence: %q", line)
+	}
+
+	bob := dial(t, addr, "bob")
+	expectLine(t, bob, "* welcome to the test server", wait)
+	send(t, alice, "marker")
+	expectAbsent(t, alice, "alice: marker", "welcome to the test server")
+}
+
+func TestMOTDLines(t *testing.T) {
+	tests := []struct {
+		motd string
+		want []string
+	}{
+		{"", nil},
+		{"one", []string{"one"}},
+		{"one\ntwo", []string{"one", "two"}},
+		{"\n\none  \r\n\n", []string{"one"}},
+		{"tab\tkept\x07bell dropped", []string{"tab\tkeptbell dropped"}},
+	}
+	for _, tt := range tests {
+		if got := motdLines(tt.motd); !slices.Equal(got, tt.want) {
+			t.Errorf("motdLines(%q) = %q, want %q", tt.motd, got, tt.want)
+		}
+	}
 }

@@ -38,6 +38,8 @@ type Config struct {
 
 	MaxDropsInARow int
 
+	MOTD string
+
 	Logger *slog.Logger
 
 	decorateDecoder func(protocol.Decoder) protocol.Decoder
@@ -56,6 +58,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("burst", c.Burst),
 		slog.Int("max_drops_in_a_row", c.MaxDropsInARow),
 		slog.Int("max_message_runes", maxMessageRunes),
+		slog.Int("motd_lines", len(motdLines(c.MOTD))),
 	)
 }
 
