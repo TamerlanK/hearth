@@ -235,8 +235,17 @@ not set on the command line (see `DECISIONS.md` D48).
 `connect --plain` is two goroutines over one `client.Client`: one parses stdin
 lines with the text codec and hands the commands to `Send`, the other renders
 `Events()` with the same codec onto stdout. Whichever ends first (EOF on stdin,
-the server closing, or Ctrl+C) makes the command return, and `Close` unwinds
-the other.
+the server closing, or Ctrl+C) makes the command close the client and wait for
+the renderer to drain before returning; the stdin reader cannot be interrupted
+while blocked on a terminal and is left to exit with the process.
+
+`send`, `who` and `rooms` are the scripting surface. Each dials as a normal
+user, does one thing through `pkg/client`, and exits: `send` says the text
+(or each stdin line) and waits for the server's echo before reporting success,
+`who` and `rooms` print their answer with the querying user removed. All four
+client commands share `resolveTarget`, which fills a missing address or name
+from `hearth/config.json` under the user config dir (`--config`,
+`HEARTH_CONFIG`); only `connect` writes that file (D77, D79).
 
 ## The client library
 

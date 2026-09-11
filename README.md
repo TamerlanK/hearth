@@ -30,8 +30,14 @@ and the profile that says where the rest of the time goes is in the repo.
 - **Hardened by default.** Per-client rate limit checked before decoding, a
   per-address connection cap, line and message caps, handshake and idle
   timeouts, control characters stripped, panics contained to one connection.
-- **A terminal UI** with rooms and members, unread badges, command history,
-  a help overlay and automatic reconnect; `--plain` for scripts and pipes.
+- **A terminal UI** with rooms and members, private conversations as
+  `@name` tabs, tab-completion, mention highlighting with a bell, unread and
+  mention badges, command history, a help overlay and automatic reconnect;
+  `--plain` for scripts and pipes.
+- **A scripting CLI.** `hearth send` posts a message and exits 0 once the
+  server has accepted it; `hearth who` and `hearth rooms` answer in text or
+  JSON. The last server and name are remembered, so `hearth connect` alone
+  is enough the second time.
 - **A Go client library**, `pkg/client`, with request correlation, a bounded
   event channel and jittered reconnect.
 - **Operable.** Structured logs, Prometheus metrics, `/healthz`, pprof,
@@ -47,10 +53,12 @@ go install github.com/TamerlanK/hearth/cmd/hearth@latest
 hearth serve                                   # terminal 1: listens on :4000
 hearth connect localhost:4000 --name alice     # terminal 2
 hearth connect localhost:4000 --name bob       # terminal 3
+hearth send "deploy finished"                  # terminal 4: uses the remembered server
 ```
 
-Type to talk. `/join golang` moves rooms, `/msg bob hi` is private, `?` opens
-help, Ctrl+C leaves. `telnet localhost 4000` works too.
+Type to talk. `/join golang` moves rooms, `/msg bob hi` opens a private
+conversation, Tab completes names and commands, `?` opens help, Ctrl+C leaves.
+`telnet localhost 4000` works too.
 
 ## Install
 
@@ -91,14 +99,28 @@ Ctrl+C or SIGTERM tells every client the server is going away and waits up to
 ### connect
 
 ```sh
-hearth connect host:4000 --name alice [--room ops] [--plain]
+hearth connect [host:4000] [--name alice] [--room ops] [--plain] [--bell=false]
 ```
 
-Opens the terminal UI: rooms and members on the left, the transcript on the
-right, a prompt at the bottom, a status bar under it. It needs 80x24 to look
-as drawn, drops the sidebar under 60 columns, follows the terminal's light or
-dark background, honours `NO_COLOR`, and reconnects on its own if the server
-goes away.
+Opens the terminal UI: rooms, private conversations and members on the left,
+the transcript on the right, a prompt at the bottom, a status bar under it
+that shows the connection, where you are, unread and mention totals, the
+focused pane and the last error. It needs 80x24 to look as drawn, drops the
+sidebar under 60 columns, follows the terminal's light or dark background,
+honours `NO_COLOR`, and reconnects on its own if the server goes away.
+
+The server and name of a successful connection are remembered in
+`hearth/config.json` under your user config directory (`--config` or
+`HEARTH_CONFIG` to move it), so afterwards `hearth connect` alone is enough.
+A name given as `--name` or `HEARTH_NAME` wins over the remembered one, which
+wins over your OS user name.
+
+A private message from someone opens a `@name` tab in the sidebar with its own
+transcript and badge; a bare line typed in that tab goes to them, `/close`
+removes it, and Enter on a user in the sidebar opens one. A message that
+contains your name as a word, or any private message, is a mention: the line
+is highlighted, the badge shows `@` instead of `•`, and the terminal bell
+rings (`--bell=false` to silence it).
 
 `--plain` is a stdin/stdout line client with no UI and no reconnect, for
 scripts:
@@ -114,8 +136,9 @@ a completion script.
 
 | Key | What it does |
 |-----|--------------|
-| `Enter` | Send the line, or join the highlighted room when the rooms pane has focus |
-| `Tab` / `Shift+Tab` | Cycle focus: input → messages → rooms |
+| `Enter` | Send the line; in the rooms pane, join the highlighted room or open a private conversation with the highlighted user |
+| `Tab` | Complete a `/command`, a name or a room at the cursor; again to cycle the matches |
+| `Tab` / `Shift+Tab` | On an empty line: cycle focus input → messages → rooms |
 | `Ctrl+N` / `Ctrl+P` | Join the next / previous room |
 | `Up` / `Down` | Command history in the input; scroll the transcript; pick a room |
 | `PgUp` / `PgDn` | Scroll the transcript |
@@ -125,8 +148,26 @@ a completion script.
 | `Ctrl+C` | Close the client and quit |
 
 Commands: `/say`, `/msg <name> <text>`, `/join <room>`, `/nick <name>`,
-`/who [room]`, `/rooms`, `/history [room]`, `/ping`, `/quit`, `/help`. A bare
-line is `/say`.
+`/who [room]`, `/rooms`, `/history [room]`, `/ping`, `/quit`, `/help`, and
+`/close` for a `@name` tab. A bare line is `/say`, or a private message inside
+a `@name` tab.
+
+### send, who, rooms
+
+```sh
+hearth send [host:4000] [--room ops] [--to bob] "text"     # or one message per stdin line
+hearth who  [host:4000] [--room ops] [--json]
+hearth rooms [host:4000] [--json]
+```
+
+`send` connects, says the text, waits for the server to echo it back and
+exits: status 0 means the server accepted it. With no text it sends every line
+of standard input, so `journalctl -f | grep ERROR | hearth send --room alerts`
+works. `who` and `rooms` connect briefly as `--name` (the remembered name or
+your OS user by default), leave you out of the answer, and print one entry per
+line or a JSON document. All three fall back to the remembered server when the
+address is left out; a first argument that parses as `host:port` is the
+address, anything else is text.
 
 ## Architecture
 

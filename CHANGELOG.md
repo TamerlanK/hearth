@@ -7,6 +7,37 @@ the release workflow groups a GitHub Release's notes by.
 
 ## [Unreleased]
 
+### Added
+
+- **TUI**: private conversations are `@name` tabs with their own transcript
+  and badge; a bare line in one is a private message, `/close` removes it,
+  and Enter on a user in the sidebar opens one.
+- **TUI**: Tab completes `/commands`, room names for `/join`, `/who` and
+  `/history`, and user names anywhere; repeated Tab cycles the matches.
+- **TUI**: mentions. A message naming you as a whole word, or any private
+  message, is highlighted, turns the badge to `@`, and rings the terminal
+  bell (`connect --bell=false`).
+- **TUI**: the status bar shows the focused pane, unread and mention totals
+  across other tabs, and the last error; the focused pane is coloured.
+- **CLI**: `hearth send` posts a message (or each stdin line) to a room or
+  `--to` a user and exits 0 once the server has echoed it back.
+- **CLI**: `hearth who` and `hearth rooms` print who is online or the room
+  list, as lines or `--json`, without opening the UI.
+- **CLI**: `connect`, `send`, `who` and `rooms` remember the last server and
+  name in `hearth/config.json` under the user config dir (`--config`,
+  `HEARTH_CONFIG`) and use them when left out.
+- **Server**: `serve --motd` sends a message of the day as system events after
+  the history replay.
+- `pkg/client`: `Name` and `Room` accessors.
+
+### Fixed
+
+- **TUI**: `/who` and `/rooms` typed in the UI showed nothing; the reply is
+  now rendered in the transcript. The sidebar re-asks the server every 10 s,
+  so member counts no longer go stale until your next join.
+- `connect --plain` returned while its output goroutine could still be
+  writing; it now drains before returning.
+
 ## [0.1.0] - 2026-09-11
 
 First release.

@@ -53,6 +53,8 @@ join. `Options.DialTimeout` (10s by default) covers all of that.
 | `Rooms(ctx)` | Every room with its member count | The next `rooms` event arrives |
 | `Send(ctx, cmd)` | Any `protocol.Command`, unacknowledged | The line has been written |
 | `Events()` | Every event the server sends, in order | Closed when the client closes |
+| `Name()` | The name the server knows you by, after any `Nick` | Safe from any goroutine |
+| `Room()` | The room you are in, with its `#` | Safe from any goroutine |
 | `State()` | `Connecting`, `Connected`, `Reconnecting` or `Closed` | Safe from any goroutine |
 | `Stats()` | `Dropped` events, `Reconnects` so far and the in-flight reconnect `Attempt` | Safe from any goroutine |
 | `Close()` | Disconnects and closes `Events()` | Every goroutine has exited |

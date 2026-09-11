@@ -568,3 +568,66 @@ comment and a comment on every exported identifier, kept to what the name
 cannot say, and `revive`'s `exported` rule enforces it there while a path
 exclusion keeps `internal/` and `cmd/` comment-free. The stuttering check is
 off because `client.Client` follows `http.Client`, not a naming accident.
+
+## 2026-09-11 — Making the client a product
+
+### D74. Private conversations are client-side tabs, not a protocol change
+`hearth/1` has no notion of a conversation: a `privmsg` is one event with a
+`from` and a `to`. The TUI derives a tab from that pair (`@` plus the other
+party) and keeps the tab's transcript, unread and mention counts locally;
+the server still sees exactly the same `msg` commands. The model therefore
+holds two names, `room` for where the server has you and `current` for what
+is on screen, and the status bar shows both when they differ. Sending a DM
+from a room opens the tab, because the user just addressed that person and
+the reply will land there; a room refresh never drops a `@` tab because the
+server does not know about it. Revisit if `hearth/2` adds request ids or
+conversation ids, at which point the tab could be server-authoritative.
+
+### D75. Tab completes when there is text and switches panes when there is not
+Tab already cycled panes and is also the universal completion key. Rather
+than move one of them to a chord nobody would find, the key does the
+expected thing for the state the input is in: with text under the cursor it
+completes, with an empty line it cycles. Shift+Tab always cycles, so pane
+switching is never more than one key away. Completion is a pure function
+over the line, cursor, rooms and users, so the table test covers the cases
+without a terminal.
+
+### D76. A mention is a whole-word, case-insensitive match; the bell is on by default
+The mention rule trims punctuation from each whitespace-separated word and
+compares it case-insensitively with the user's name, so `@alice!` and
+`Alice,` match and `alice2` does not. Any private message counts. The bell
+is `\a` written to stdout from a `tea.Cmd`, which is a single byte the
+renderer can interleave with safely; it is on by default because a chat
+client whose mentions are silent is the one people miss, and
+`--bell=false` (`HEARTH_BELL`) turns it off.
+
+### D77. The remembered server lives in a JSON file under the user config dir
+`os.UserConfigDir()` gives the platform's answer (`~/.config`,
+`~/Library/Application Support`, `%AppData%`) and `encoding/json` is in the
+standard library, so a config file costs no dependency and no format
+decision. It stores only the last address and name, written atomically
+(temp file plus rename, mode 0600) after a successful `connect`, and never by
+the scripting commands, which should not change a person's defaults. The
+path is a persistent `--config` flag so `HEARTH_CONFIG` works through the
+same env binding every other flag has. Precedence is flag, env, remembered,
+OS user name.
+
+### D78. The message of the day is ordinary `system` events after the replay
+No new event kind: each non-empty line of `--motd` becomes one `system`
+event queued right after the history replay, so telnet, JSON clients and
+the TUI render it with the code they already have, and `docs/PROTOCOL.md`
+now says the replay may be followed by system events. Control characters
+are stripped like message text, and a `\r\n` operator on Windows gets the
+same result as one on Linux.
+
+### D79. `send`, `who` and `rooms` connect as a real user and leave themselves out
+The protocol has no anonymous query, so the scripting commands join like
+anyone else, under the remembered name or the OS user name. `who` removes
+that name from its answer and `rooms` subtracts one from the room it joined,
+so the output describes the server as it was before the command ran. `send`
+waits for the server to echo the message back before exiting, because
+closing a socket with unread data in it sends a reset that can discard what
+was just written; the echo is the only acknowledgement `hearth/1` has, and
+it makes exit status 0 mean accepted. The first argument is the address only
+if it parses as `host:port`, so `hearth send hello` with a remembered server
+does the obvious thing.
