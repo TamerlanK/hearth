@@ -745,3 +745,22 @@ writes a checkout. `* text=auto eol=lf` makes the working tree match the
 object store on every platform; `*.gif binary` keeps the demo out of the
 heuristic. Fixing the golden test to tolerate `\r\n` would have hidden the
 symptom and left `gofmt` broken.
+
+### D89. The Makefile assumes no POSIX shell
+`make build` failed on Windows because mingw make with no `sh.exe` on PATH
+runs every recipe through `cmd.exe`, which has no `date(1)` and no
+`/dev/null`: `2>/dev/null` aborted the git stamps and cmd's interactive
+`date` pasted a prompt into `-ldflags`, so the link failed. The fix is to
+stop needing a shell. All three stamps now come from `git`, the one tool that
+is the same on every platform (`DATE` is the commit time, which is what Go's
+own VCS stamping records as `vcs.time` anyway), with `$(or ...)` for the
+fallback instead of `||`. `fmt` and `lint` are single commands: the
+`golangci-lint` config already carries the `gofmt` and `goimports`
+formatters, and `golangci-lint fmt --diff` exits non-zero on a diff, so six
+lines of `if [ -n "$out" ]` and a `command -v` guard were doing what one
+binary does. `clean` is the one recipe that cannot be shell-agnostic, so it
+asks the shell what it is — `$(shell echo 'x')`, which only a POSIX shell
+strips — rather than trusting `$(SHELL)`, which still reads `/bin/sh` when
+make is about to fall back to cmd, or `$(OS)`, which says `Windows_NT` inside
+Git Bash where `rm` is correct. `$(EXE)` gives the Windows binary the `.exe`
+Explorer and PowerShell need to run it at all.

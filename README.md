@@ -313,7 +313,7 @@ make demo          # re-record demo/demo.gif (needs vhs v0.10.0, ttyd, ffmpeg, t
 make release-dry   # goreleaser snapshot into dist/
 ```
 
-`make lint` needs `golangci-lint`; `make demo` needs
+`make fmt` and `make lint` need `golangci-lint`; `make demo` needs
 `go install github.com/charmbracelet/vhs@v0.10.0` (v0.12.0 writes no output).
 CI runs lint, the race test matrix on three OSes and two Go versions, a fuzz
 smoke, cross-compilation, `govulncheck` and a Docker build. Releases are
