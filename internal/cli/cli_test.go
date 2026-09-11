@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -818,5 +819,109 @@ func TestServeTLSFlagErrors(t *testing.T) {
 	_, err := runCLI(t, "", "serve", "--addr", "127.0.0.1:0", "--tls-cert", "missing.pem", "--tls-key", "missing.pem")
 	if err == nil || !strings.Contains(err.Error(), "load the tls key pair") {
 		t.Errorf("err = %v, want a load failure", err)
+	}
+}
+
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestTailFollowsARoom(t *testing.T) {
+	addr := startTestServer(t)
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	bob, err := client.Dial(ctx, addr, client.Options{Name: "bob", Room: "ops", DialTimeout: wait})
+	if err != nil {
+		t.Fatalf("dial bob: %v", err)
+	}
+	defer bob.Close()
+
+	tests := []struct {
+		name  string
+		args  []string
+		check func(t *testing.T, out, said string)
+	}{
+		{
+			name: "lines",
+			args: []string{"--room", "ops"},
+			check: func(t *testing.T, out, said string) {
+				if !strings.Contains(out, "bob: "+said) {
+					t.Errorf("tail output = %q, want bob's message", out)
+				}
+			},
+		},
+		{
+			name: "json",
+			args: []string{"--room", "ops", "--json"},
+			check: func(t *testing.T, out, said string) {
+				var live bool
+				for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+					var e protocol.Event
+					if err := json.Unmarshal([]byte(line), &e); err != nil {
+						t.Fatalf("tail --json emitted a non-JSON line %q: %v", line, err)
+					}
+					live = live || (e.Kind == protocol.Msg && e.Text == said)
+				}
+				if !live {
+					t.Errorf("tail --json never carried a live msg event:\n%s", out)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			said := "hello " + tt.name
+			runCtx, stopTail := context.WithCancel(ctx)
+			defer stopTail()
+			out := &safeBuffer{}
+			root := newRootCmd()
+			root.SetOut(out)
+			root.SetErr(io.Discard)
+			root.SetArgs(append([]string{"--config", cfg, "tail", addr, "--name", "watcher-" + tt.name}, tt.args...))
+			done := make(chan error, 1)
+			go func() { done <- root.ExecuteContext(runCtx) }()
+
+			waitFor(t, func() bool { return strings.Contains(out.String(), "watcher-"+tt.name) }, "tail to join")
+			if err := bob.Say(ctx, said); err != nil {
+				t.Fatalf("say: %v", err)
+			}
+			waitFor(t, func() bool { return strings.Contains(out.String(), said) }, "the message to arrive")
+			stopTail()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("tail returned %v", err)
+				}
+			case <-time.After(wait):
+				t.Fatal("tail did not stop when the context was cancelled")
+			}
+			tt.check(t, out.String(), said)
+		})
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.After(wait)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }

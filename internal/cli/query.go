@@ -29,10 +29,14 @@ type queryOpts struct {
 	dial    dialOpts
 }
 
-func (o *queryOpts) bind(cmd *cobra.Command, room bool) {
+func (o *queryOpts) bind(cmd *cobra.Command, room bool, timeout time.Duration) {
 	f := cmd.Flags()
 	f.StringVar(&o.name, "name", "", "name to connect as; default is the remembered name, then your OS user name")
-	f.DurationVar(&o.timeout, "timeout", 10*time.Second, "time allowed for the whole command")
+	usage := "time allowed for the whole command"
+	if timeout == 0 {
+		usage = "stop after this long; 0 follows until interrupted"
+	}
+	f.DurationVar(&o.timeout, "timeout", timeout, usage)
 	if room {
 		f.StringVar(&o.room, "room", "", "room to act in (default the server's default room)")
 	}
@@ -52,7 +56,10 @@ func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context,
 		return nil, nil, nil, nil, err
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-	ctx, cancel := context.WithTimeout(ctx, dialTimeout(o.timeout))
+	cancel := func() {}
+	if o.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+	}
 	c, err := client.Dial(ctx, addr, opts)
 	if err != nil {
 		cancel()
@@ -120,7 +127,7 @@ the server has accepted each message. Meant for cron jobs, CI and scripts.`,
 			return nil
 		},
 	}
-	o.bind(cmd, true)
+	o.bind(cmd, true, 10*time.Second)
 	cmd.Flags().StringVar(&to, "to", "", "send a private message to this user instead of to the room")
 	return cmd
 }
@@ -188,7 +195,7 @@ func newWhoCmd() *cobra.Command {
 			return nil
 		},
 	}
-	o.bind(cmd, true)
+	o.bind(cmd, true, 10*time.Second)
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "print a JSON object instead of one name per line")
 	return cmd
 }
@@ -226,9 +233,68 @@ func newRoomsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	o.bind(cmd, false)
+	o.bind(cmd, false, 10*time.Second)
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "print a JSON array instead of one room per line")
 	return cmd
+}
+
+func newTailCmd() *cobra.Command {
+	var o queryOpts
+	var raw bool
+	cmd := &cobra.Command{
+		Use:   "tail [host:port]",
+		Short: "Follow a room on standard output until interrupted",
+		Long: `Print everything happening in a room, one line at a time, and keep going.
+
+The read-side counterpart to hearth send: pipe it into grep, tee it to a file,
+or run it under a supervisor as a bridge. Ctrl+C or SIGTERM stops it. Unlike
+connect --plain it never reads stdin, so it is safe in a pipeline.`,
+		Example: `  hearth tail chat.example.com:4000 --room ops
+  hearth tail --json | jq -r 'select(.kind=="msg") | .text'`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop, c, _, err := o.session(cmd, args)
+			if err != nil {
+				return err
+			}
+			defer stop()
+			defer closeQuietly(cmd, c)
+			return follow(ctx, c, cmd.OutOrStdout(), raw)
+		},
+	}
+	o.bind(cmd, true, 0)
+	cmd.Flags().BoolVar(&raw, "json", false, "print each event as the JSON object the server sent instead of a readable line")
+	return cmd
+}
+
+func follow(ctx context.Context, c *client.Client, out io.Writer, raw bool) error {
+	var codec protocol.TextCodec
+	for {
+		select {
+		case e, ok := <-c.Events():
+			if !ok {
+				return nil
+			}
+			if err := emit(out, codec, e, raw); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func emit(out io.Writer, codec protocol.TextCodec, e protocol.Event, raw bool) error {
+	if raw {
+		if err := json.NewEncoder(out).Encode(e); err != nil {
+			return fmt.Errorf("write event: %w", err)
+		}
+		return nil
+	}
+	if err := codec.Encode(out, e); err != nil {
+		return fmt.Errorf("write event: %w", err)
+	}
+	return nil
 }
 
 func withoutSelf(names []string, me string) []string {
