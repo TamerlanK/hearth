@@ -43,6 +43,7 @@ var Commands = []CommandSpec{
 	{Name: "who", Usage: "/who [room]", leading: freeTextNone},
 	{Name: "rooms", Usage: "/rooms", leading: freeTextNone},
 	{Name: "history", Usage: "/history [room]", leading: freeTextNone},
+	{Name: "away", Usage: "/away [reason]", leading: 0},
 	{Name: "ping", Usage: "/ping", leading: freeTextNone},
 	{Name: "quit", Usage: "/quit", leading: freeTextNone},
 	{Name: "help", Usage: "/help", leading: freeTextNone},

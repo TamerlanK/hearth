@@ -43,6 +43,7 @@ type client struct {
 
 	name string
 	room *room
+	away string
 
 	maxDrops int
 	overload chan struct{}

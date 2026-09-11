@@ -59,6 +59,11 @@ func renderText(e Event) (string, error) {
 		return fmt.Sprintf("* %s left %s", e.From, e.Room), nil
 	case Nick:
 		return fmt.Sprintf("* %s is now known as %s", e.From, e.To), nil
+	case Away:
+		if e.Text == "" {
+			return fmt.Sprintf("* %s is back", e.From), nil
+		}
+		return fmt.Sprintf("* %s is away: %s", e.From, e.Text), nil
 	case Who:
 		return fmt.Sprintf("* online in %s (%d): %s", e.Room, len(e.Names), strings.Join(e.Names, ", ")), nil
 	case Rooms:

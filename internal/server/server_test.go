@@ -966,3 +966,74 @@ func TestMOTDLines(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenRequiredForTextClients(t *testing.T) {
+	addr, _, _ := startServer(t, Config{Token: "s3cret"})
+
+	good := connect(t, addr)
+	expectLine(t, good, "This server requires a token", wait)
+	send(t, good, "s3cret")
+	expectLine(t, good, "Enter a name", wait)
+	send(t, good, "alice")
+	expectLine(t, good, "* alice joined #general", wait)
+
+	bad := connect(t, addr)
+	expectLine(t, bad, "This server requires a token", wait)
+	send(t, bad, "guess")
+	expectLine(t, bad, "! bad token", wait)
+	expectClosed(t, bad, wait)
+}
+
+func TestTokenRequiredForJSONClients(t *testing.T) {
+	addr, _, _ := startServer(t, Config{Token: "s3cret"})
+
+	bad := connect(t, addr)
+	send(t, bad, protocol.Hello)
+	expectLine(t, bad, "bad token", wait)
+	expectClosed(t, bad, wait)
+
+	wrong := connect(t, addr)
+	send(t, wrong, protocol.HelloWith("nope"))
+	expectLine(t, wrong, "bad token", wait)
+	expectClosed(t, wrong, wait)
+
+	good := connect(t, addr)
+	send(t, good, protocol.HelloWith("s3cret"))
+	expectLine(t, good, "protocol json", wait)
+	send(t, good, `{"cmd":"nick","args":["alice"]}`)
+	expectEvent(t, good, protocol.Join, wait)
+}
+
+func TestTokenlessServerIgnoresATokenInHello(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	c := connect(t, addr)
+	send(t, c, protocol.HelloWith("whatever"))
+	expectLine(t, c, "protocol json", wait)
+	send(t, c, `{"cmd":"nick","args":["alice"]}`)
+	expectEvent(t, c, protocol.Join, wait)
+}
+
+func TestAwayAndBack(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	alice := dial(t, addr, "alice")
+	bob := dial(t, addr, "bob")
+	expectLine(t, alice, "* bob joined #general", wait)
+
+	send(t, bob, "/away lunch")
+	expectLine(t, alice, "* bob is away: lunch", wait)
+
+	send(t, alice, "/who")
+	expectLine(t, alice, "* online in #general (2): alice, bob", wait)
+	expectLine(t, alice, "* bob is away: lunch", wait)
+
+	send(t, bob, "/away lunch")
+	send(t, bob, "back at my desk")
+	expectAbsent(t, alice, "* bob is back", "is away")
+	expectLine(t, alice, "bob: back at my desk", wait)
+
+	send(t, bob, "/away afk")
+	expectLine(t, alice, "* bob is away: afk", wait)
+	send(t, bob, "/join golang")
+	send(t, bob, "/who")
+	expectLine(t, bob, "* bob is away: afk", wait)
+}

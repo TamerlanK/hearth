@@ -138,7 +138,8 @@ func (h *hub) handle(c *client, cmd protocol.Command) []protocol.Event {
 		return h.rename(c, cmd.Args)
 	case "who":
 		name := h.roomArg(c, cmd.Args)
-		return []protocol.Event{{Kind: protocol.Who, Room: name, Names: h.names(name), Time: time.Now()}}
+		events := []protocol.Event{{Kind: protocol.Who, Room: name, Names: h.names(name), Time: time.Now()}}
+		return append(events, h.awayIn(name)...)
 	case "rooms":
 		return []protocol.Event{{Kind: protocol.Rooms, Names: h.roomList(), Time: time.Now()}}
 	case "history":
@@ -149,6 +150,8 @@ func (h *hub) handle(c *client, cmd protocol.Command) []protocol.Event {
 			}
 		}
 		return []protocol.Event{systemEvent("no history for " + name)}
+	case "away":
+		return h.away(c, printable(cmd.Text))
 	case "ping":
 		return []protocol.Event{{Kind: protocol.Pong, Time: time.Now()}}
 	default:
@@ -161,6 +164,7 @@ func (h *hub) say(c *client, text string) []protocol.Event {
 	if text == "" {
 		return nil
 	}
+	h.away(c, "")
 	e := protocol.Event{Kind: protocol.Msg, Room: c.room.name, From: c.name, Text: text, Time: time.Now()}
 	c.room.history.Push(e)
 	start := time.Now()
@@ -211,6 +215,9 @@ func (h *hub) joinRoom(c *client, args []string) []protocol.Event {
 	c.room = next
 	next.members[c] = struct{}{}
 	h.broadcast(next, protocol.Event{Kind: protocol.Join, Room: next.name, From: c.name, Time: time.Now()})
+	if c.away != "" {
+		h.broadcast(next, protocol.Event{Kind: protocol.Away, Room: next.name, From: c.name, Text: c.away, Time: time.Now()})
+	}
 	return replay(next)
 }
 
@@ -234,6 +241,30 @@ func (h *hub) rename(c *client, args []string) []protocol.Event {
 	h.byName[name] = c
 	h.broadcast(c.room, protocol.Event{Kind: protocol.Nick, Room: c.room.name, From: old, To: name, Time: time.Now()})
 	return nil
+}
+
+func (h *hub) away(c *client, reason string) []protocol.Event {
+	if c.away == reason {
+		return nil
+	}
+	c.away = reason
+	h.broadcast(c.room, protocol.Event{Kind: protocol.Away, Room: c.room.name, From: c.name, Text: reason, Time: time.Now()})
+	return nil
+}
+
+func (h *hub) awayIn(room string) []protocol.Event {
+	r, ok := h.rooms[room]
+	if !ok {
+		return nil
+	}
+	var events []protocol.Event
+	for c := range r.members {
+		if c.away != "" {
+			events = append(events, protocol.Event{Kind: protocol.Away, Room: room, From: c.name, Text: c.away, Time: time.Now()})
+		}
+	}
+	slices.SortFunc(events, func(a, b protocol.Event) int { return strings.Compare(a.From, b.From) })
+	return events
 }
 
 func (h *hub) broadcast(r *room, e protocol.Event) {

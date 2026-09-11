@@ -21,7 +21,7 @@ func TestCandidates(t *testing.T) {
 		{"empty line", "", 0, 0, nil},
 		{"command prefix", "/j", 2, 0, []string{"/join"}},
 		{"command prefix is case-insensitive", "/J", 2, 0, []string{"/join"}},
-		{"bare slash lists every command", "/", 1, 0, []string{"/close", "/help", "/history", "/join", "/msg", "/nick", "/ping", "/quit", "/rooms", "/say", "/who"}},
+		{"bare slash lists every command", "/", 1, 0, []string{"/away", "/close", "/help", "/history", "/join", "/msg", "/nick", "/ping", "/quit", "/rooms", "/say", "/who"}},
 		{"join completes rooms without the hash", "/join go", 8, 6, []string{"#golang"}},
 		{"join completes rooms with the hash", "/join #g", 8, 6, []string{"#general", "#golang"}},
 		{"who and history take rooms", "/history o", 10, 9, []string{"#ops"}},

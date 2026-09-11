@@ -4,10 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -677,4 +684,139 @@ func (c clockHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (c clockHandler) WithGroup(name string) slog.Handler {
 	return clockHandler{Handler: c.Handler.WithGroup(name), at: c.at}
+}
+
+func selfSignedCert(t *testing.T) (certFile, keyFile string, pool *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "hearth-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	dir := t.TempDir()
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool = x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certPEM) {
+		t.Fatal("test certificate does not parse")
+	}
+	return certFile, keyFile, pool
+}
+
+func TestServeOverTLSWithAToken(t *testing.T) {
+	certFile, keyFile, _ := selfSignedCert(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logR, logW := io.Pipe()
+	root := newRootCmd()
+	root.SetOut(io.Discard)
+	root.SetErr(logW)
+	root.SetArgs([]string{"serve", "--addr", "127.0.0.1:0", "--log-format", "json",
+		"--tls-cert", certFile, "--tls-key", keyFile, "--token", "s3cret"})
+	served := make(chan error, 1)
+	go func() {
+		served <- root.ExecuteContext(ctx)
+		logW.Close()
+	}()
+	dec := json.NewDecoder(logR)
+	var addr string
+	for addr == "" {
+		var rec map[string]any
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatalf("reading startup logs: %v", err)
+		}
+		if rec["msg"] == "hearth listening" {
+			if rec["tls"] != true {
+				t.Fatalf("startup log says tls=%v, want true", rec["tls"])
+			}
+			addr, _ = rec["addr"].(string)
+		}
+	}
+	go io.Copy(io.Discard, logR)
+
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"plaintext against a tls server", []string{"--token", "s3cret"}, "negotiate"},
+		{"tls without trusting the certificate", []string{"--tls", "--token", "s3cret"}, "certificate"},
+		{"tls with the wrong token", []string{"--tls", "--tls-ca", certFile, "--token", "nope"}, "bad token"},
+		{"tls with no token", []string{"--tls", "--tls-ca", certFile}, "bad token"},
+		{"tls-insecure needs tls", []string{"--tls-insecure", "--token", "s3cret"}, "need --tls"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"--config", cfg, "send", addr, "--name", "probe", "--timeout", "3s"}, tt.args...)
+			_, err := runCLI(t, "", append(args, "hello")...)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	for _, trust := range [][]string{{"--tls-ca", certFile}, {"--tls-insecure"}} {
+		args := append([]string{"--config", cfg, "send", addr, "--name", "probe", "--timeout", "5s", "--tls", "--token", "s3cret"}, trust...)
+		if _, err := runCLI(t, "", append(args, "over tls")...); err != nil {
+			t.Errorf("send with %v: %v", trust, err)
+		}
+	}
+
+	out, err := runCLI(t, "", "--config", cfg, "who", addr, "--name", "peek", "--timeout", "5s",
+		"--tls", "--tls-ca", certFile, "--token", "s3cret")
+	if err != nil || strings.TrimSpace(out) != "" {
+		t.Errorf("who over tls: err = %v, output = %q", err, out)
+	}
+
+	cancel()
+	if err := <-served; err != nil {
+		t.Fatalf("serve returned %v", err)
+	}
+}
+
+func TestServeTLSFlagErrors(t *testing.T) {
+	certFile, _, _ := selfSignedCert(t)
+	for _, tt := range []struct{ name, arg, wantErr string }{
+		{"cert without key", "--tls-cert", "must be given together"},
+		{"key without cert", "--tls-key", "must be given together"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runCLI(t, "", "serve", "--addr", "127.0.0.1:0", tt.arg, certFile)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+	_, err := runCLI(t, "", "serve", "--addr", "127.0.0.1:0", "--tls-cert", "missing.pem", "--tls-key", "missing.pem")
+	if err == nil || !strings.Contains(err.Error(), "load the tls key pair") {
+		t.Errorf("err = %v, want a load failure", err)
+	}
 }

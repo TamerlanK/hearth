@@ -8,6 +8,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ var (
 	ErrRateLimited  = errors.New("rate limited")
 	ErrNotConnected = errors.New("not connected")
 	ErrNegotiation  = errors.New("server did not accept the json protocol")
+	ErrBadToken     = errors.New("server rejected the token")
 )
 
 // EventBuffer is the capacity of the channel returned by [Client.Events].
@@ -60,6 +62,8 @@ func (e *ServerError) Is(target error) bool {
 		return strings.HasPrefix(e.Text, "name taken")
 	case ErrRateLimited:
 		return e.Text == "rate limited"
+	case ErrBadToken:
+		return e.Text == "bad token"
 	}
 	return false
 }
@@ -106,6 +110,11 @@ type Options struct {
 	Name string
 	// Room is joined right after connecting; empty means the server's default.
 	Room string
+	// Token authenticates the connection when the server requires one.
+	Token string
+	// TLS dials with TLS when set. Use a zero &tls.Config{} for a server with
+	// a certificate your system trusts.
+	TLS *tls.Config
 	// DialTimeout bounds the TCP dial plus the name handshake; 10s when zero.
 	DialTimeout time.Duration
 	// Logger receives connection and reconnect events; discarded when nil.
@@ -438,9 +447,9 @@ func (c *Client) interrupt(conn net.Conn) {
 }
 
 func (c *Client) connect(ctx context.Context) (net.Conn, error) {
-	conn, err := new(net.Dialer).DialContext(ctx, "tcp", c.addr)
+	conn, err := c.dial(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", c.addr, err)
+		return nil, err
 	}
 	if err := c.handshake(ctx, conn); err != nil {
 		if cerr := conn.Close(); cerr != nil {
@@ -454,11 +463,27 @@ func (c *Client) connect(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
+	if c.opts.TLS == nil {
+		conn, err := d.DialContext(ctx, "tcp", c.addr)
+		if err != nil {
+			return nil, fmt.Errorf("dial %s: %w", c.addr, err)
+		}
+		return conn, nil
+	}
+	conn, err := (&tls.Dialer{NetDialer: &d, Config: c.opts.TLS}).DialContext(ctx, "tcp", c.addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s with tls: %w", c.addr, err)
+	}
+	return conn, nil
+}
+
 func (c *Client) handshake(ctx context.Context, conn net.Conn) error {
 	stop := context.AfterFunc(ctx, func() { c.interrupt(conn) })
 	defer stop()
 	r := bufio.NewReaderSize(conn, protocol.MaxLineBytes)
-	if _, err := io.WriteString(conn, protocol.Hello+"\n"); err != nil {
+	if _, err := io.WriteString(conn, protocol.HelloWith(c.opts.Token)+"\n"); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
 	for {
@@ -472,6 +497,9 @@ func (c *Client) handshake(ctx context.Context, conn net.Conn) error {
 		}
 		if e.Kind == protocol.System && e.Text == "protocol json" {
 			break
+		}
+		if e.Kind == protocol.Error {
+			return fmt.Errorf("negotiate: %w", &ServerError{Text: e.Text})
 		}
 		return fmt.Errorf("negotiate: got %s %q: %w", e.Kind, e.Text, ErrNegotiation)
 	}

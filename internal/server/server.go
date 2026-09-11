@@ -17,6 +17,7 @@ var (
 	errServerFull    = errors.New("server full, try again later")
 	errTooManyFromIP = errors.New("too many connections from your address")
 	errPanic         = errors.New("connection handler panicked")
+	errBadToken      = errors.New("bad token")
 )
 
 type Config struct {
@@ -40,6 +41,8 @@ type Config struct {
 
 	MOTD string
 
+	Token string
+
 	Logger *slog.Logger
 
 	decorateDecoder func(protocol.Decoder) protocol.Decoder
@@ -59,6 +62,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Int("max_drops_in_a_row", c.MaxDropsInARow),
 		slog.Int("max_message_runes", maxMessageRunes),
 		slog.Int("motd_lines", len(motdLines(c.MOTD))),
+		slog.Bool("token_required", c.Token != ""),
 	)
 }
 

@@ -26,6 +26,7 @@ type queryOpts struct {
 	room    string
 	timeout time.Duration
 	asJSON  bool
+	dial    dialOpts
 }
 
 func (o *queryOpts) bind(cmd *cobra.Command, room bool) {
@@ -35,6 +36,7 @@ func (o *queryOpts) bind(cmd *cobra.Command, room bool) {
 	if room {
 		f.StringVar(&o.room, "room", "", "room to act in (default the server's default room)")
 	}
+	o.dial.bind(cmd)
 }
 
 func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context, context.CancelFunc, *client.Client, []string, error) {
@@ -45,9 +47,13 @@ func (o *queryOpts) session(cmd *cobra.Command, args []string) (context.Context,
 	if name == "" {
 		return nil, nil, nil, nil, errors.New("--name is required (or set HEARTH_NAME)")
 	}
+	opts := client.Options{Name: name, Room: o.room, DialTimeout: dialTimeout(o.timeout)}
+	if err := o.dial.apply(&opts); err != nil {
+		return nil, nil, nil, nil, err
+	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	c, err := client.Dial(ctx, addr, client.Options{Name: name, Room: o.room, DialTimeout: o.timeout})
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout(o.timeout))
+	c, err := client.Dial(ctx, addr, opts)
 	if err != nil {
 		cancel()
 		stop()

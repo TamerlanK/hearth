@@ -5,16 +5,40 @@
 // specification is docs/PROTOCOL.md in the repository.
 package protocol
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Version names the protocol, Hello is the exact first line that negotiates
 // the JSON encoding, and MaxLineBytes is the longest line either side accepts
-// before answering with [ErrLineTooLong].
+// before answering with [ErrLineTooLong]. A server that requires a token
+// expects [HelloWith] instead of Hello.
 const (
 	Version      = "hearth/1"
 	Hello        = "HELLO hearth/1 json"
 	MaxLineBytes = 4096
+	tokenField   = " token="
 )
+
+// HelloWith returns the negotiation line carrying a token. With an empty
+// token it returns [Hello].
+func HelloWith(token string) string {
+	if token == "" {
+		return Hello
+	}
+	return Hello + tokenField + token
+}
+
+// ParseHello reports whether line is a negotiation line, and returns the
+// token it carries, which is empty when it carries none.
+func ParseHello(line string) (token string, ok bool) {
+	line = strings.TrimSuffix(line, "\r")
+	if line == Hello {
+		return "", true
+	}
+	return strings.CutPrefix(line, Hello+tokenField)
+}
 
 // Kind says what an [Event] describes.
 type Kind string
@@ -34,6 +58,7 @@ const (
 	History Kind = "history"
 	Error   Kind = "error"
 	Pong    Kind = "pong"
+	Away    Kind = "away"
 )
 
 // Event is one line from the server. Which fields are set depends on Kind:
@@ -63,7 +88,7 @@ type Command struct {
 
 var kinds = map[Kind]struct{}{
 	Msg: {}, PrivMsg: {}, System: {}, Join: {}, Leave: {}, Nick: {},
-	Who: {}, Rooms: {}, History: {}, Error: {}, Pong: {},
+	Who: {}, Rooms: {}, History: {}, Error: {}, Pong: {}, Away: {},
 }
 
 // KnownKind reports whether k is an event kind defined by hearth/1.

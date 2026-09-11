@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ type serveOpts struct {
 	metricsAddr string
 	logFormat   string
 	logLevel    string
+	tlsCert     string
+	tlsKey      string
 }
 
 func newServeCmd() (*cobra.Command, *serveOpts) {
@@ -61,6 +64,9 @@ is going away, and the process waits up to 5s for connections to drain.`,
 	f.IntVar(&o.cfg.Burst, "burst", 10, "messages a client may send back to back before --rate applies")
 	f.IntVar(&o.cfg.MaxDropsInARow, "max-drops", 100, "consecutive undeliverable events before a slow client is disconnected; 0 means never")
 	f.StringVar(&o.cfg.MOTD, "motd", "", "message of the day sent to a client after it joins; a newline starts a new line")
+	f.StringVar(&o.cfg.Token, "token", "", "require this token from every client; prefer HEARTH_TOKEN over the command line")
+	f.StringVar(&o.tlsCert, "tls-cert", "", "PEM certificate file; with --tls-key, serve TLS instead of plaintext")
+	f.StringVar(&o.tlsKey, "tls-key", "", "PEM private key file for --tls-cert")
 	return cmd, o
 }
 
@@ -75,15 +81,23 @@ func runServe(cmd *cobra.Command, o *serveOpts) error {
 	cfg := o.cfg
 	cfg.Logger = logger
 
+	tlsCfg, err := serverTLS(o.tlsCert, o.tlsKey)
+	if err != nil {
+		return err
+	}
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", o.addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", o.addr, err)
+	}
+	if tlsCfg != nil {
+		ln = tls.NewListener(ln, tlsCfg)
 	}
 
 	srv := server.New(cfg)
 	logger.Info("hearth listening",
 		"event", "startup",
 		"addr", ln.Addr().String(),
+		"tls", tlsCfg != nil,
 		"metrics_addr", o.metricsAddr,
 		"log_format", o.logFormat,
 		"log_level", o.logLevel,

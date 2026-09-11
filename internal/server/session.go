@@ -1,17 +1,26 @@
 package server
 
 import (
-	"bytes"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/TamerlanK/hearth/pkg/protocol"
 )
 
-const greeting = "Welcome to hearth. Enter a name (1-20 characters, no spaces):"
+const (
+	greeting    = "Welcome to hearth. Enter a name (1-20 characters, no spaces):"
+	tokenPrompt = "This server requires a token. Enter it:"
+	badToken    = "bad token"
+)
+
+func (s *Server) authorised(token string) bool {
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Token)) == 1
+}
 
 func (s *Server) handshake(ctx context.Context, c *client, log *slog.Logger) (name string, err error) {
 	defer func() {
@@ -23,18 +32,36 @@ func (s *Server) handshake(ctx context.Context, c *client, log *slog.Logger) (na
 	if err := c.setReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return "", err
 	}
-	if err := c.writeEvent(systemEvent(greeting)); err != nil {
+	authed := s.cfg.Token == ""
+	prompt := greeting
+	if !authed {
+		prompt = tokenPrompt
+	}
+	if err := c.writeEvent(systemEvent(prompt)); err != nil {
 		return "", err
 	}
-	for negotiated := false; ; negotiated = true {
+	for first := true; ; first = false {
 		line, err := c.readLine(0)
 		if err != nil {
 			return "", fmt.Errorf("handshake read: %w", err)
 		}
-		if !negotiated {
-			if bytes.Equal(bytes.TrimSuffix(line, []byte("\r")), []byte(protocol.Hello)) {
+		if first {
+			if token, ok := protocol.ParseHello(string(line)); ok {
 				c.useJSON(s.cfg)
+				if !authed && !s.authorised(token) {
+					return "", s.refuse(c)
+				}
+				authed = true
 				if err := c.writeEvent(systemEvent("protocol json")); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if !authed {
+				if !s.authorised(strings.TrimSuffix(string(line), "\r")) {
+					return "", s.refuse(c)
+				}
+				if err := c.writeEvent(systemEvent(greeting)); err != nil {
 					return "", err
 				}
 				continue
@@ -61,6 +88,13 @@ func (s *Server) handshake(ctx context.Context, c *client, log *slog.Logger) (na
 			return "", fmt.Errorf("register %q: %w", candidate, err)
 		}
 	}
+}
+
+func (s *Server) refuse(c *client) error {
+	if err := c.writeEvent(errorEvent(badToken)); err != nil {
+		return err
+	}
+	return errBadToken
 }
 
 func proposedName(dec protocol.Decoder, line []byte) (string, error) {
