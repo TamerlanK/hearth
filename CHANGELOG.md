@@ -30,6 +30,12 @@ the release workflow groups a GitHub Release's notes by.
   the history replay.
 - `pkg/client`: `Name` and `Room` accessors.
 
+### Changed
+
+- `serve --log-format text` is a compact human format (short clock, padded
+  level, aligned attributes, colour on a terminal unless `NO_COLOR`) instead
+  of slog's default `time=… level=… msg="…"` line. `json` is unchanged.
+
 ### Fixed
 
 - **TUI**: `/who` and `/rooms` typed in the UI showed nothing; the reply is

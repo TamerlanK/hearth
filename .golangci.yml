@@ -58,6 +58,10 @@ linters:
         linters:
           - revive
         text: ^(exported|package-comments)
+      - linters:
+          - gocritic
+        text: ^hugeParam
+        source: slog\.Record\) error
 
 formatters:
   enable:

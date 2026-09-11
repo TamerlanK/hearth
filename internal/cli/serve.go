@@ -49,7 +49,7 @@ is going away, and the process waits up to 5s for connections to drain.`,
 	f := cmd.Flags()
 	f.StringVar(&o.addr, "addr", ":4000", "host:port to listen on; omit the host to listen on every interface")
 	f.StringVar(&o.metricsAddr, "metrics-addr", "", "host:port to serve Prometheus /metrics and /healthz on; empty disables it")
-	f.StringVar(&o.logFormat, "log-format", "text", "log line format: text or json")
+	f.StringVar(&o.logFormat, "log-format", "text", "log line format: text (for people, coloured on a terminal) or json (one object per line, every key)")
 	f.StringVar(&o.logLevel, "log-level", "info", "lowest log level to print: debug, info, warn or error")
 	f.IntVar(&o.cfg.MaxClients, "max-clients", 100, "maximum concurrent connections; 0 means unlimited")
 	f.IntVar(&o.cfg.MaxClientsPerIP, "max-per-ip", 10, "maximum concurrent connections from one address; 0 means unlimited")
@@ -68,7 +68,7 @@ func runServe(cmd *cobra.Command, o *serveOpts) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger, err := newLogger(cmd.ErrOrStderr(), o.logFormat, o.logLevel)
+	logger, err := newLogger(cmd.ErrOrStderr(), o.logFormat, o.logLevel, wantColor(cmd.ErrOrStderr()))
 	if err != nil {
 		return err
 	}
@@ -122,17 +122,16 @@ func runServe(cmd *cobra.Command, o *serveOpts) error {
 	return nil
 }
 
-func newLogger(w io.Writer, format, level string) (*slog.Logger, error) {
+func newLogger(w io.Writer, format, level string, color bool) (*slog.Logger, error) {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(level)); err != nil {
 		return nil, fmt.Errorf("parse --log-level %q: %w", level, err)
 	}
-	opts := &slog.HandlerOptions{Level: lvl}
 	switch strings.ToLower(format) {
 	case "text":
-		return slog.New(slog.NewTextHandler(w, opts)), nil
+		return slog.New(newPrettyHandler(w, lvl, color)), nil
 	case "json":
-		return slog.New(slog.NewJSONHandler(w, opts)), nil
+		return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})), nil
 	default:
 		return nil, fmt.Errorf("unknown --log-format %q, want text or json", format)
 	}

@@ -263,7 +263,7 @@ func TestNewLogger(t *testing.T) {
 		wantErr             string
 		wantLine            string
 	}{
-		{name: "text info", format: "text", level: "info", wantLine: "msg=hello"},
+		{name: "text info", format: "text", level: "info", wantLine: "INFO  hello"},
 		{name: "json debug", format: "JSON", level: "debug", wantLine: `"msg":"hello"`},
 		{name: "bad level", format: "text", level: "loud", wantErr: `parse --log-level "loud"`},
 		{name: "bad format", format: "xml", level: "info", wantErr: `unknown --log-format "xml"`},
@@ -271,7 +271,7 @@ func TestNewLogger(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			log, err := newLogger(&out, tt.format, tt.level)
+			log, err := newLogger(&out, tt.format, tt.level, false)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
@@ -494,6 +494,7 @@ func TestConnectRemembersTheServerAndName(t *testing.T) {
 func TestResolveTargetFallsBackToTheOSUser(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.json")
 	root := newRootCmd()
+	root.SetOut(io.Discard)
 	root.SetArgs([]string{"--config", cfg, "version"})
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -602,4 +603,78 @@ func TestLooksLikeAddr(t *testing.T) {
 			t.Errorf("looksLikeAddr(%q) = %v, want %v", s, got, want)
 		}
 	}
+}
+
+func TestPrettyHandler(t *testing.T) {
+	at := time.Date(2026, 9, 11, 16, 49, 54, 0, time.UTC)
+	tests := []struct {
+		name  string
+		color bool
+		log   func(*slog.Logger)
+		want  string
+	}{
+		{
+			name: "message only",
+			log:  func(l *slog.Logger) { l.Info("hearth stopped", "event", "shutdown") },
+			want: "16:49:54 INFO  hearth stopped\n",
+		},
+		{
+			name: "attrs are aligned and event is dropped",
+			log: func(l *slog.Logger) {
+				l.With("client_id", "6d39d0fb").Info("client joined", "event", "join", "name", "alice", "room", "#general")
+			},
+			want: "16:49:54 INFO  client joined              client_id=6d39d0fb name=alice room=#general\n",
+		},
+		{
+			name: "groups keep their prefix and values quote only when needed",
+			log: func(l *slog.Logger) {
+				l.Warn("a warning", slog.Group("config", "idle_timeout", 5*time.Minute, "motd", "be kind"), "empty", "", "n", 3)
+			},
+			want: "16:49:54 WARN  a warning                  config.idle_timeout=5m0s config.motd=\"be kind\" empty=\"\" n=3\n",
+		},
+		{
+			name: "long messages push the attrs along",
+			log:  func(l *slog.Logger) { l.Error("a message longer than the column it is padded to", "err", "boom") },
+			want: "16:49:54 ERROR a message longer than the column it is padded to err=boom\n",
+		},
+		{
+			name: "debug below the level is dropped",
+			log:  func(l *slog.Logger) { l.Debug("noise") },
+			want: "",
+		},
+		{
+			name:  "colour wraps the time, level and keys",
+			color: true,
+			log:   func(l *slog.Logger) { l.Info("hi", "k", "v") },
+			want:  "\x1b[2m16:49:54\x1b[0m \x1b[32mINFO \x1b[0m hi                         \x1b[2mk=\x1b[0mv\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			h := newPrettyHandler(&out, slog.LevelInfo, tt.color)
+			tt.log(slog.New(clockHandler{Handler: h, at: at}))
+			if got := out.String(); got != tt.want {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type clockHandler struct {
+	slog.Handler
+	at time.Time
+}
+
+func (c clockHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.Time = c.at
+	return c.Handler.Handle(ctx, r)
+}
+
+func (c clockHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return clockHandler{Handler: c.Handler.WithAttrs(attrs), at: c.at}
+}
+
+func (c clockHandler) WithGroup(name string) slog.Handler {
+	return clockHandler{Handler: c.Handler.WithGroup(name), at: c.at}
 }

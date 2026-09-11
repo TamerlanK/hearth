@@ -241,6 +241,10 @@ docker compose up        # chat on :4000, Prometheus UI on http://localhost:9090
 
 - **Logs** are `log/slog` with a stable key set: `event`, `client_id`,
   `remote_addr`, `name`, `room`. Follow `client_id` to trace one connection.
+  `--log-format text` (the default) is for people: `16:49:54 INFO  client
+  joined  client_id=6d39d0fb name=alice room=#general`, coloured on a
+  terminal, `event` omitted because the message says it. `json` carries every
+  key for machines.
 - **Metrics** on `/metrics`: `hearth_connections_current`,
   `hearth_connections_total`, `hearth_messages_total{kind}`,
   `hearth_dropped_messages_total`, `hearth_rate_limited_total`,

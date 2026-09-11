@@ -84,11 +84,7 @@ reconnects and is meant for pipes and scripts.`,
 }
 
 func requireTerminal() error {
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return fmt.Errorf("stat stdout: %w", err)
-	}
-	if info.Mode()&os.ModeCharDevice == 0 {
+	if !isTerminal(os.Stdout) {
 		return errors.New("stdout is not a terminal; use --plain for pipes and scripts")
 	}
 	return nil
