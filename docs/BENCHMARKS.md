@@ -164,14 +164,32 @@ room, so connecting N clients into one room emits N²/2 events. At 200 connects
 per second into a 5000-member room that is a million events per second before
 anyone has said anything, and it is why the load tool paces connections
 (`--connect-rate`, default 200/s) and why 17 clients in the single-room 5000
-run were disconnected before the measurement started. The `named` uniqueness
-check is also a linear walk over every member, which shows up at 8% of CPU in
-a profile taken during the connect phase and nowhere in steady state.
+run were disconnected before the measurement started. The name-uniqueness
+check was also a linear walk over every member and showed at 8% of CPU in a
+profile taken during the connect phase; it is now a map (see *Name lookup*),
+and what remains of the storm is the join notices themselves.
 
 A server meant for big rooms would stop announcing joins above some room size,
-or coalesce them; a directory of names would make `named` O(1). Neither is done
-because the `--max-clients` default is 100 and the room shape this is built for
-is tens of people, not thousands.
+or coalesce them. That is not done because the `--max-clients` default is 100
+and the room shape this is built for is tens of people, not thousands.
+
+### Name lookup
+
+Registration, `/nick` and `/msg` each look a name up in the hub. Until D72 that
+was a walk over every member of every room, so the cost of a private message
+grew with the number of people online. It is now a `map[string]*client` that
+the hub writes in the same steps that change membership.
+
+| online | before | after |
+|-------:|-------:|------:|
+| 100 | 565 ns | 155 ns |
+| 1000 | 4.3 µs | 153 ns |
+| 5000 | 23.8 µs | 157 ns |
+
+`BenchmarkPrivateMessage`: one `/msg` through the hub, 144 B and 1 alloc per
+op in both columns (the event itself). `BenchmarkConnectStorm/clients=5000`,
+five thousand registrations into one empty hub, went from 378 ms to 282 ms on
+the same machine; the 282 ms is the 12.5 million join notices.
 
 ### What the load tool found
 

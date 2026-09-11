@@ -50,3 +50,53 @@ func drainOutboxes(clients []*client) {
 		}
 	}
 }
+
+func BenchmarkConnectStorm(b *testing.B) {
+	for _, n := range []int{100, 1000, 5000} {
+		b.Run(fmt.Sprintf("clients=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				b.StopTimer()
+				h := newHub(Config{HistorySize: defaultHistorySize, DefaultRoom: defaultRoom})
+				clients := make([]*client, n)
+				for i := range clients {
+					clients[i] = newClient(nil, Config{})
+				}
+				b.StartTimer()
+				for i, c := range clients {
+					if err := h.add(c, fmt.Sprintf("c%d", i)); err != nil {
+						b.Fatalf("add c%d: %v", i, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPrivateMessage(b *testing.B) {
+	for _, n := range []int{100, 1000, 5000} {
+		b.Run(fmt.Sprintf("online=%d", n), func(b *testing.B) {
+			h := newHub(Config{HistorySize: defaultHistorySize, DefaultRoom: defaultRoom})
+			clients := make([]*client, n)
+			for i := range clients {
+				clients[i] = newClient(nil, Config{})
+				if err := h.add(clients[i], fmt.Sprintf("c%d", i)); err != nil {
+					b.Fatalf("add c%d: %v", i, err)
+				}
+			}
+			drainOutboxes(clients)
+			from, to := clients[0], clients[n-1]
+			cmd := protocol.Command{Name: "msg", Args: []string{to.name}, Text: "psst"}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				h.private(from, cmd)
+				if i%sendBuffer == sendBuffer-1 {
+					b.StopTimer()
+					drainOutboxes([]*client{to})
+					b.StartTimer()
+				}
+			}
+		})
+	}
+}

@@ -136,13 +136,15 @@ The read is interrupted with `SetReadDeadline(now)` rather than `conn.Close()` s
 
 ## Rooms and history
 
-The hub holds `rooms map[string]*room`, and a `room` is a name, a `members
-map[*client]struct{}` and a `*ring.Ring[protocol.Event]` of past messages. Each
-client carries a `*room` pointer, so every client is in exactly one room and
-`broadcast` walks that room's members directly instead of filtering the whole
-client set. There is no separate index of clients: the room registry is the
-complete membership list, which is why `named` (uniqueness for `nick` and
-registration) walks rooms and members.
+The hub holds `rooms map[string]*room` and `byName map[string]*client`. A
+`room` is a name, a `members map[*client]struct{}` and a
+`*ring.Ring[protocol.Event]` of past messages. Each client carries a `*room`
+pointer, so every client is in exactly one room and `broadcast` walks that
+room's members directly instead of filtering the whole client set. `byName` is
+the directory behind name uniqueness at registration and `nick` and behind
+`msg` delivery; it is written in the same hub steps that change membership
+(`add`, `remove`, `rename`), so the two views never disagree and a lookup is
+one map read however many people are online.
 
 - A room is created on the first `join` that names it and deleted when its last
   member leaves, taking its history with it. The default room is exempt: it is
@@ -304,8 +306,9 @@ In the order the evidence supports, not the order that is most fun:
    `--tls-cert`/`--tls-key`, and a `HELLO hearth/1 json token=...` extension
    that stays within the first-line negotiation. Both fit the "edge enforces
    limits, hub stays plain" rule.
-3. **Coalesce joins in large rooms** and index names in a map, so a
-   connect storm is O(N) and `named` is O(1). Both are hub-local changes.
+3. **Coalesce joins in large rooms**, so a connect storm emits O(N) events
+   instead of N²/2. Names are already indexed (D72); the join notices are
+   what is left of the storm cost.
 4. **Request ids** in `hearth/2`, so `pkg/client` can correlate replies
    properly and run more than one request at a time.
 5. **Persist history** to an append-only file per room, replayed on start,

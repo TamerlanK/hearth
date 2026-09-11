@@ -254,8 +254,7 @@ and pushes the image. How to get a change in is
 1. Batch writes and encode once per broadcast (the profile says two thirds of
    server CPU).
 2. TLS on the listener and a shared-secret token inside the `HELLO` line.
-3. Coalesce join notices in large rooms and index names, so connect storms
-   are linear.
+3. Coalesce join notices in large rooms, so connect storms are linear.
 4. Request ids in `hearth/2` so the client can run concurrent requests.
 5. Append-only history persistence per room.
 6. Live room-list updates and multi-room membership in the UI.

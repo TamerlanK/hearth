@@ -28,6 +28,7 @@ type hub struct {
 	maxRooms    int
 
 	rooms    map[string]*room
+	byName   map[string]*client
 	register chan registration
 	leaving  chan *client
 	requests chan request
@@ -51,6 +52,7 @@ func newHub(cfg Config) *hub {
 		historySize: cfg.HistorySize,
 		maxRooms:    cfg.MaxRooms,
 		rooms:       make(map[string]*room),
+		byName:      make(map[string]*client),
 		register:    make(chan registration),
 		leaving:     make(chan *client),
 		requests:    make(chan request),
@@ -99,12 +101,13 @@ func (h *hub) discardIfEmpty(r *room) {
 }
 
 func (h *hub) add(c *client, name string) error {
-	if h.named(name) != nil {
+	if _, taken := h.byName[name]; taken {
 		return errNameTaken
 	}
 	r := h.rooms[h.defaultRoom]
 	c.name = name
 	c.room = r
+	h.byName[name] = c
 	r.members[c] = struct{}{}
 	h.broadcast(r, protocol.Event{Kind: protocol.Join, Room: r.name, From: name, Time: time.Now()})
 	c.trySendAll(replay(r))
@@ -114,6 +117,7 @@ func (h *hub) add(c *client, name string) error {
 func (h *hub) remove(c *client) {
 	r := c.room
 	delete(r.members, c)
+	delete(h.byName, c.name)
 	c.closeSend()
 	h.broadcast(r, protocol.Event{Kind: protocol.Leave, Room: r.name, From: c.name, Time: time.Now()})
 	h.discardIfEmpty(r)
@@ -166,7 +170,7 @@ func (h *hub) private(c *client, cmd protocol.Command) []protocol.Event {
 	if len(cmd.Args) != 1 || cmd.Text == "" {
 		return []protocol.Event{errorEvent(protocol.Usage("msg"))}
 	}
-	to := h.named(cmd.Args[0])
+	to := h.byName[cmd.Args[0]]
 	if to == nil {
 		return []protocol.Event{errorEvent("no such user " + cmd.Args[0])}
 	}
@@ -218,11 +222,13 @@ func (h *hub) rename(c *client, args []string) []protocol.Event {
 	if name == c.name {
 		return nil
 	}
-	if h.named(name) != nil {
+	if _, taken := h.byName[name]; taken {
 		return []protocol.Event{errorEvent("name taken")}
 	}
 	old := c.name
 	c.name = name
+	delete(h.byName, old)
+	h.byName[name] = c
 	h.broadcast(c.room, protocol.Event{Kind: protocol.Nick, Room: c.room.name, From: old, To: name, Time: time.Now()})
 	return nil
 }
@@ -240,17 +246,6 @@ func replay(r *room) []protocol.Event {
 		past[i].Kind = protocol.History
 	}
 	return past
-}
-
-func (h *hub) named(name string) *client {
-	for _, r := range h.rooms {
-		for c := range r.members {
-			if c.name == name {
-				return c
-			}
-		}
-	}
-	return nil
 }
 
 func (h *hub) names(room string) []string {

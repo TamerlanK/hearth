@@ -906,3 +906,28 @@ func httpGet(t *testing.T, url string) string {
 	}
 	return string(body)
 }
+
+func TestNameIndexFollowsRenameAndLeave(t *testing.T) {
+	addr, _, _ := startServer(t, Config{})
+	alice := dial(t, addr, "alice")
+	bob := dial(t, addr, "bob")
+	expectLine(t, alice, "* bob joined #general", wait)
+
+	send(t, bob, "/nick bobby")
+	expectLine(t, alice, "* bob is now known as bobby", wait)
+
+	send(t, alice, "/msg bob stale")
+	expectLine(t, alice, "! no such user bob", wait)
+	send(t, alice, "/msg bobby fresh")
+	expectLine(t, bob, "alice -> bobby: fresh", wait)
+
+	send(t, bob, "/quit")
+	expectLine(t, alice, "* bobby left #general", wait)
+	send(t, alice, "/msg bobby gone")
+	expectLine(t, alice, "! no such user bobby", wait)
+
+	again := dial(t, addr, "bobby")
+	expectLine(t, again, "* bobby joined #general", wait)
+	send(t, alice, "/msg bobby back")
+	expectLine(t, again, "alice -> bobby: back", wait)
+}

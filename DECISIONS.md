@@ -544,3 +544,17 @@ instruction file should be. A second agent's convention file can be added the
 same way without the style guide moving again. Revisit if the two audiences
 ever need genuinely different rules, which would be a sign the rules are
 wrong.
+
+### D72. The hub keeps a name directory
+`named` walked every member of every room, so registration, `/nick` and
+`/msg` all cost O(clients online) and a connect storm of N clients was
+O(N²) in name checks on top of the O(N²) join notices. The hub now holds
+`byName map[string]*client`, written in `add`, `remove` and `rename`, the
+three steps that change membership, and read everywhere a name is resolved.
+It is the same goroutine that owns `rooms`, so no new synchronisation. A
+private message went from 23.8 µs to 157 ns with 5000 people online and the
+5000-client storm from 378 ms to 282 ms (`docs/BENCHMARKS.md`, *Name
+lookup*). The regression test is `TestNameIndexFollowsRenameAndLeave`, which
+exercises the two ways the directory could go stale. Revisit only if a second
+owner of names appears, which the architecture rules out.
+
