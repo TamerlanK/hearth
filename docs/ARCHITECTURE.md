@@ -285,8 +285,9 @@ shape everything else, plus one that the benchmarks turned into a decision.
   member. Fine at the default `--max-clients 100`; visible at 5000.
 - **A client is in exactly one room.** Following two rooms needs two
   connections.
-- **The room list in the TUI is a snapshot** refreshed when *you* join or
-  leave; other people's moves between rooms you are not in are not pushed.
+- **The room list in the TUI is polled, not pushed.** The UI re-asks
+  `rooms` and `who` every 10 s and after each of its own joins; a move by
+  someone else shows up on the next poll, not instantly.
 - **Per-address caps key on the address string**, so a NAT looks like one
   client and an IPv6 host with many addresses looks like many.
 - **Message text is capped at 1024 runes and lines at 4096 bytes**; there is

@@ -19,6 +19,7 @@ const (
 	historyDepth = 100
 	sendTimeout  = 5 * time.Second
 	pollInterval = time.Second
+	refreshEvery = 10
 )
 
 type pane int
@@ -69,6 +70,8 @@ type Model struct {
 	pending bool
 	past    []string
 	recall  int
+	ticks   int
+	asked   map[protocol.Kind]bool
 	view    layout
 	style   styles
 	body    viewport.Model
@@ -89,6 +92,7 @@ func newModel(c *client.Client, addr, name string, color bool) *Model {
 		addr:   addr,
 		me:     name,
 		rooms:  map[string]*roomState{},
+		asked:  map[protocol.Kind]bool{},
 		link:   client.Connected,
 		follow: true,
 		style:  s,
@@ -179,7 +183,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.announce(msg.state)
 		}
 		m.link, m.attempt = msg.state, msg.attempt
+		m.ticks++
 		next := m.poll()
+		if m.link == client.Connected && m.ticks%refreshEvery == 0 {
+			next = tea.Batch(next, m.refresh())
+		}
 		return m, next
 	case sentMsg:
 		if msg.err != nil {
@@ -366,6 +374,12 @@ func (m *Model) guard(cmd protocol.Command) tea.Cmd {
 		m.fail("not connected (" + m.link.String() + "), message not sent")
 		return nil
 	}
+	switch cmd.Name {
+	case "who":
+		m.asked[protocol.Who] = true
+	case "rooms":
+		m.asked[protocol.Rooms] = true
+	}
 	return m.dispatch(cmd)
 }
 
@@ -403,12 +417,16 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 	case protocol.Who:
 		m.touch(e.Room).users = e.Names
 		m.touch(e.Room).members = len(e.Names)
-		m.redraw()
-		return nil
+		if !m.answer(e.Kind) {
+			m.redraw()
+			return nil
+		}
 	case protocol.Rooms:
 		m.list(e.Names)
-		m.redraw()
-		return nil
+		if !m.answer(e.Kind) {
+			m.redraw()
+			return nil
+		}
 	case protocol.Join:
 		if e.From == m.me {
 			m.current = e.Room
@@ -433,6 +451,14 @@ func (m *Model) apply(e protocol.Event) tea.Cmd {
 	}
 	m.record(e)
 	return cmd
+}
+
+func (m *Model) answer(kind protocol.Kind) bool {
+	if !m.asked[kind] {
+		return false
+	}
+	delete(m.asked, kind)
+	return true
 }
 
 func (m *Model) list(entries []string) {
@@ -506,7 +532,7 @@ func (m *Model) rename(room, from, to string) {
 
 func (m *Model) record(e protocol.Event) {
 	room := e.Room
-	if e.Kind == protocol.PrivMsg || room == "" {
+	if e.Kind == protocol.PrivMsg || e.Kind == protocol.Who || room == "" {
 		room = m.current
 	}
 	r := m.touch(room)

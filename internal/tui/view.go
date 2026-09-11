@@ -53,6 +53,12 @@ func (m *Model) line(e protocol.Event) []string {
 	if e.Kind == protocol.Nick {
 		text = e.From + " is now known as " + e.To
 	}
+	if e.Kind == protocol.Who {
+		text = "online in " + e.Room + " (" + strconv.Itoa(len(e.Names)) + "): " + strings.Join(e.Names, ", ")
+	}
+	if e.Kind == protocol.Rooms {
+		text = "rooms (" + strconv.Itoa(len(e.Names)) + "): " + strings.Join(e.Names, ", ")
+	}
 	width := max(8, m.view.messages)
 	head := m.style.clock.Render("["+e.Time.Format(clock)+"] ") + style.Render(fit(who, nameCols)) + " "
 	body := wrap(text, max(1, width-gutterCols))

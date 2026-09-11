@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -363,4 +364,64 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestWhoAndRoomsRepliesShowOnlyWhenAsked(t *testing.T) {
+	m := joined(t, 100, 30)
+	before := len(texts(m, "#general"))
+	m = feed(t, m,
+		event(protocol.Event{Kind: protocol.Who, Room: "#general", Names: []string{"alice", "bob", "carol"}}),
+		event(protocol.Event{Kind: protocol.Rooms, Names: []string{"#general (3)"}}),
+	)
+	if got := len(texts(m, "#general")); got != before {
+		t.Fatalf("background refresh replies were shown: %q", texts(m, "#general"))
+	}
+	if got := m.rooms["#general"].users; !equal(got, []string{"alice", "bob", "carol"}) {
+		t.Errorf("sidebar users = %q, want the refreshed list", got)
+	}
+
+	m = feed(t, m, typed("/who"), pressed(tea.KeyEnter),
+		event(protocol.Event{Kind: protocol.Who, Room: "#general", Names: []string{"alice", "bob", "carol"}}),
+		typed("/rooms"), pressed(tea.KeyEnter),
+		event(protocol.Event{Kind: protocol.Rooms, Names: []string{"#general (3)"}}),
+	)
+	got := texts(m, "#general")
+	if len(got) != before+2 || got[before] != "who:" || got[before+1] != "rooms:" {
+		t.Fatalf("asked-for replies not shown once each: %q", got[before:])
+	}
+	view := plain(m.View())
+	for _, want := range []string{"online in #general (3): alice, bob, carol", "rooms (1): #general (3)"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("transcript lacks %q:\n%s", want, view)
+		}
+	}
+
+	m = feed(t, m, event(protocol.Event{Kind: protocol.Who, Room: "#general", Names: []string{"alice"}}))
+	if got := len(texts(m, "#general")); got != before+2 {
+		t.Error("a later background reply was shown after the asked-for one")
+	}
+}
+
+func TestSidebarRefreshesPeriodically(t *testing.T) {
+	m := joined(t, 100, 30)
+	for range 2 * refreshEvery {
+		m = feed(t, m, linkMsg{state: client.Connected})
+	}
+	if m.ticks != 2*refreshEvery {
+		t.Errorf("ticks = %d, want %d", m.ticks, 2*refreshEvery)
+	}
+	if len(m.asked) != 0 {
+		t.Errorf("a background refresh marked %v as asked for", m.asked)
+	}
+	before := len(texts(m, "#general"))
+	m = feed(t, m,
+		event(protocol.Event{Kind: protocol.Rooms, Names: []string{"#general (2)", "#ops (1)"}}),
+		event(protocol.Event{Kind: protocol.Who, Room: "#general", Names: []string{"alice", "bob"}}),
+	)
+	if got := len(texts(m, "#general")); got != before {
+		t.Errorf("background replies were shown: %q", texts(m, "#general")[before:])
+	}
+	if !slices.Contains(m.order, "#ops") {
+		t.Errorf("sidebar order = %q, want the refreshed room list", m.order)
+	}
 }
