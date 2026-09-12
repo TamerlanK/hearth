@@ -38,21 +38,48 @@ func (m *Model) View() string {
 }
 
 func (m *Model) transcript() []string {
-	r, ok := m.rooms[m.current]
-	if !ok {
-		return nil
-	}
 	var out []string
 	var day time.Time
-	for _, e := range r.log.Snapshot() {
-		if !e.Time.IsZero() && !sameDay(e.Time, day) {
-			day = e.Time
-			out = append(out, m.daybreak(day))
+	if r, ok := m.rooms[m.current]; ok {
+		for _, e := range r.log.Snapshot() {
+			if !e.Time.IsZero() && !sameDay(e.Time, day) {
+				day = e.Time
+				out = append(out, m.daybreak(day))
+			}
+			out = append(out, m.line(e)...)
 		}
-		out = append(out, m.line(e)...)
+	}
+	if len(out) == 0 {
+		out = m.primer()
 	}
 	for len(out) < m.view.log {
 		out = append([]string{""}, out...)
+	}
+	return out
+}
+
+var primerTips = [][2]string{
+	{"Enter", "send what you typed to the room"},
+	{"/join #room", "open another room; Ctrl+N and Ctrl+P step through them"},
+	{"/msg name text", "say something privately, in its own @name tab"},
+	{"/who", "list who is here; /nick name renames you"},
+	{"Tab", "complete a command, a name or a room"},
+	{"F1", "every key and command"},
+}
+
+func (m *Model) primer() []string {
+	w := max(8, m.view.messages)
+	head := "You are " + m.me + " on " + m.addr + ". Nothing here yet."
+	if m.current != "" {
+		head = "Nothing in " + m.current + " yet — type a line to start it off."
+	}
+	out := make([]string, 0, 3+len(primerTips))
+	out = append(out, "", "  "+m.style.day.Render(fit(head, w-2)), "")
+	keyw := min(primerKeyCols, max(1, (w-2)/2))
+	for _, tip := range primerTips {
+		out = append(out, "  "+
+			m.style.searchKey.Render(fit(tip[0], keyw))+
+			m.style.system.Render(fit(tip[1], max(1, w-2-keyw))))
 	}
 	return out
 }
@@ -187,6 +214,9 @@ func (m *Model) sidebar() string {
 	}
 	lines := []string{title.Render(fit("Rooms", w))}
 	items := m.items()
+	if len(items) == 0 {
+		lines = append(lines, m.style.system.Render(fit(" /join #room", w)))
+	}
 	for i, it := range items {
 		if it.user {
 			break
@@ -204,7 +234,11 @@ func (m *Model) sidebar() string {
 		}
 		lines = append(lines, style.Render(roomLabel(it.name, r.members, r.unread, r.mentions, it.name == m.current, w)))
 	}
-	lines = append(lines, fit("", w), m.style.sidebarTitle.Render(fit("Users in "+m.room, w)))
+	heading := "Users"
+	if m.room != "" {
+		heading = "Users in " + m.room
+	}
+	lines = append(lines, fit("", w), m.style.sidebarTitle.Render(fit(heading, w)))
 	if r, ok := m.rooms[m.room]; ok {
 		at := len(m.order)
 		for _, u := range r.users {
@@ -281,10 +315,16 @@ func (m *Model) statusBar() string {
 		}
 		parts = append(parts, s)
 	}
+	switch m.focus {
+	case paneMessages:
+		parts = append(parts, m.focus.String()+" · Tab to type")
+	case paneRooms:
+		parts = append(parts, m.focus.String()+" · Enter opens · Tab to type")
+	}
 	if m.lastErr != "" {
 		parts = append(parts, "! "+m.lastErr)
 	}
-	hints := []string{"focus: " + m.focus.String(), "^F: find", "?: help"}
+	hints := []string{"F1: help", "^F: find", "Tab: panes"}
 	style := m.style.status
 	if m.link != client.Connected || m.lastErr != "" {
 		style = m.style.statusAlert
@@ -335,41 +375,73 @@ func overlayEdge(s *styles) lipgloss.TerminalColor {
 }
 
 var helpKeys = [][2]string{
-	{"Enter", "send the line"},
-	{"Tab", "complete a /command, name or room; again to cycle matches"},
-	{"Tab / Shift+Tab", "on an empty line: cycle input, messages, rooms"},
+	{"Enter", "send the line you typed"},
+	{"Tab", "complete a command, name or room"},
+	{"Tab on empty line", "move between typing, messages, rooms"},
 	{"Ctrl+N / Ctrl+P", "next / previous room"},
-	{"Up / Down", "command history, scroll, or pick a room or user"},
-	{"Enter on a user", "open a private conversation (@name tab)"},
+	{"Up / Down", "history, scroll, or pick in the list"},
+	{"Enter on a user", "open a private @name tab"},
 	{"PgUp / PgDn", "scroll the transcript"},
-	{"Ctrl+F", "search the transcript"},
-	{"Ctrl+L", "clear the current room"},
-	{"? / F1", "toggle this help"},
-	{"Esc", "close this help"},
-	{"Ctrl+C", "quit"},
+	{"Ctrl+F", "search this transcript"},
+	{"Ctrl+L", "clear this transcript"},
+	{"Esc", "back to typing, or close this"},
+	{"F1", "show or hide this help"},
+	{"Ctrl+C", "quit hearth"},
+}
+
+var helpFooter = []string{
+	"A bare line goes to the room; in a @name tab it goes to that person.",
+	"Tag someone with @name, or the whole room with @all or @here.",
+}
+
+func (m *Model) helpKeyColumn(key, desc int) []string {
+	rows := make([]string, 0, 2+len(helpKeys))
+	rows = append(rows, m.style.overlayKey.Render(fit("Keys", key+desc)), "")
+	for _, k := range helpKeys {
+		rows = append(rows, m.style.overlayKey.Render(fit(k[0], key))+
+			m.style.overlay.Render(fit(k[1], desc)))
+	}
+	return rows
+}
+
+func (m *Model) helpCommandColumn() []string {
+	rows := make([]string, 0, 3+len(protocol.Commands))
+	rows = append(rows, m.style.overlayKey.Render(fit("Commands", helpCmdCols)), "")
+	for _, spec := range protocol.Commands {
+		rows = append(rows, m.style.overlay.Render(fit(spec.Usage, helpCmdCols)))
+	}
+	return append(rows, m.style.overlay.Render(fit("/close", helpCmdCols)))
 }
 
 func (m *Model) overlay() string {
-	rows := make([]string, 0, len(helpKeys)+len(protocol.Commands)+7)
-	rows = append(rows, m.style.overlayKey.Render("Keys"), "")
-	for _, k := range helpKeys {
-		rows = append(rows, m.style.overlayKey.Render(fit(k[0], 18))+m.style.overlay.Render(k[1]))
+	budget := max(4, m.view.width-4)
+	key := min(helpKeyCols, budget/2)
+	desc := min(helpDescCols, budget-key)
+	width := key + desc
+	rows := m.helpKeyColumn(key, desc)
+	if budget >= helpKeyCols+helpDescCols+2+helpCmdCols {
+		width = helpKeyCols + helpDescCols + 2 + helpCmdCols
+		blank := fit("", helpKeyCols+helpDescCols)
+		rows = m.helpKeyColumn(helpKeyCols, helpDescCols)
+		for i, c := range m.helpCommandColumn() {
+			if i < len(rows) {
+				rows[i] += "  " + c
+				continue
+			}
+			rows = append(rows, blank+"  "+c)
+		}
 	}
-	rows = append(rows, "", m.style.overlayKey.Render("Commands"), "")
-	for _, spec := range protocol.Commands {
-		rows = append(rows, m.style.overlay.Render(spec.Usage))
+	rows = append(rows, "")
+	for _, line := range helpFooter {
+		rows = append(rows, m.style.overlay.Render(fit(line, width)))
 	}
-	rows = append(rows,
-		m.style.overlay.Render("/close"),
-		"",
-		m.style.overlay.Render("a bare line is /say, or a private message in a @name tab · Esc closes this"))
+	if n := max(1, m.view.body-2); len(rows) > n {
+		rows = rows[:n]
+	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(overlayEdge(&m.style)).
-		Padding(0, 2).
+		Padding(0, 1).
 		Render(strings.Join(rows, "\n"))
-	if lipgloss.Height(box) > m.view.body || lipgloss.Width(box) > m.view.width {
-		box = strings.Join(rows[:min(len(rows), max(1, m.view.body-2))], "\n")
-	}
 	return lipgloss.Place(m.view.width, m.view.body, lipgloss.Center, lipgloss.Center, box)
 }

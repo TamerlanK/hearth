@@ -15,6 +15,11 @@ const (
 	clockCols    = 8
 	nameCols     = 12
 	gutterCols   = clockCols + nameCols + 1
+
+	primerKeyCols = 16
+	helpKeyCols   = 19
+	helpDescCols  = 37
+	helpCmdCols   = 18
 )
 
 type layout struct {

@@ -58,6 +58,10 @@ func isDM(name string) bool {
 	return strings.HasPrefix(name, "@")
 }
 
+func chanName(name string) string {
+	return "#" + strings.TrimPrefix(name, "#")
+}
+
 func dmTab(e protocol.Event, me string) string {
 	if e.From == me {
 		return "@" + e.To
@@ -252,6 +256,11 @@ func (m *Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.help = false
 			return m, nil
 		}
+		if m.focus != paneInput {
+			m.focus = paneInput
+			m.input.Focus()
+			return m, nil
+		}
 	case "f1":
 		m.help = !m.help
 		return m, nil
@@ -421,7 +430,7 @@ func (m *Model) open(name string) tea.Cmd {
 	if name == "" || name == m.current {
 		return nil
 	}
-	if !isDM(name) {
+	if !isDM(name) && name != m.room {
 		return m.guard(protocol.Command{Name: "join", Args: []string{name}})
 	}
 	m.touch(name)
@@ -480,6 +489,11 @@ func (m *Model) submit() tea.Cmd {
 	case "help":
 		m.help = true
 		return nil
+	case "join":
+		if len(cmd.Args) == 1 && chanName(cmd.Args[0]) == m.room && m.room != m.current {
+			m.show(m.room)
+			return nil
+		}
 	}
 	return m.guard(m.outgoing(cmd))
 }
@@ -619,7 +633,11 @@ func (m *Model) mentioned(e protocol.Event) bool {
 
 func namesMe(text, me string) bool {
 	for _, word := range strings.Fields(text) {
-		if strings.EqualFold(strings.TrimFunc(word, unicode.IsPunct), me) {
+		bare := strings.TrimFunc(word, unicode.IsPunct)
+		if strings.EqualFold(bare, me) {
+			return true
+		}
+		if strings.HasPrefix(word, "@") && slices.Contains(everyone, "@"+strings.ToLower(bare)) {
 			return true
 		}
 	}

@@ -33,7 +33,7 @@ HEARTH_NAME wins over the remembered one, which wins over your OS user name.
 
 The terminal UI opens by default and reconnects on its own if the server goes
 away. Type a line to send it to the room; lines starting with / are commands
-(? or F1 lists them). Ctrl+C or /quit leaves cleanly.
+(F1 lists them). Ctrl+C or /quit leaves cleanly.
 
 --plain runs a minimal line client on stdin/stdout instead, which never
 reconnects and is meant for pipes and scripts.`,

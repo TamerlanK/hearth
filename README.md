@@ -129,6 +129,12 @@ contains your name as a word, or any private message, is a mention: the line
 is highlighted, the badge shows `@` instead of `•`, and the terminal bell
 rings (`--bell=false` to silence it).
 
+Tag someone in a room by naming them — `alice` and `@alice` both count — or
+tag everyone in it with `@all` or `@here`, which is a mention for every member
+who sees the line. The `@` is required for the room tags, so a sentence about
+`all` of something stays an ordinary sentence, and `Tab` after an `@` completes
+a name or the room tags.
+
 Against a server with TLS or a token, add `--tls` (plus `--tls-ca ca.pem`, or
 `--tls-insecure` for a self-signed certificate you trust) and `--token`
 (or `HEARTH_TOKEN`). `--log-file chat.log` keeps your own transcript. Every
@@ -158,8 +164,8 @@ a completion script.
 | `PgUp` / `PgDn` | Scroll the transcript |
 | `Ctrl+F` | Search the transcript; Enter and the arrows walk the matches, Esc closes |
 | `Ctrl+L` | Clear the current room's transcript |
-| `?` / `F1` | Toggle the help overlay (`?` outside the input) |
-| `Esc` | Close the help overlay |
+| `F1` | Toggle the help overlay, from any pane (`?` does the same outside the input, where it would otherwise be typed) |
+| `Esc` | Close the help overlay, or leave a pane and go back to typing |
 | `Ctrl+C` | Close the client and quit |
 
 Commands: `/say`, `/msg <name> <text>`, `/join <room>`, `/nick <name>`,

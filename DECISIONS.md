@@ -764,3 +764,40 @@ strips — rather than trusting `$(SHELL)`, which still reads `/bin/sh` when
 make is about to fall back to cmd, or `$(OS)`, which says `Windows_NT` inside
 Git Bash where `rm` is correct. `$(EXE)` gives the Windows binary the `.exe`
 Explorer and PowerShell need to run it at all.
+
+### D90. The TUI explains itself on an empty screen
+A first run showed a blank pane, an empty "Rooms" heading, a dangling "Users
+in " with no room, and a status bar advertising `?: help` — a key the input
+pane swallows as a literal `?`, so the one advertised way out did not work.
+The fix is not a tutorial mode but the empty state itself: `transcript` falls
+back to a primer (who you are, where you are, the six things worth knowing)
+whenever the current room has nothing in it, so the space that was blank now
+carries the orientation and disappears the moment a message arrives. It is
+rendered, never recorded, so it stays out of `--log-file`, out of the ring
+buffer and out of every room's state. The status bar now advertises `F1`,
+which works from every pane, and names the pane you are in only when it is
+not the input — the moment typing does nothing is exactly when a newcomer
+needs to be told why. `?` keeps its old meaning so a line may still start
+with one. Esc is the way back to typing from any pane, not just out of help.
+The help overlay was the other half: at 30 rows it overflowed, and the
+truncation fallback dropped the border and let `lipgloss.Place` centre each
+ragged line, so the one screen meant to explain the program was the least
+legible thing in it. Keys and commands are now two columns sized from the
+terminal — both above 78 columns, keys alone below, with the key column
+halving on the way down to `minCols` — and every cell is `fit` to a plain
+width before it is styled, so nothing slices an ANSI escape and the box fits
+inside the frame at every size a test can ask for.
+
+### D91. `@all` is a client-side rule, not a server broadcast
+Tagging extends the mention rule of D76 instead of adding a wire message:
+every client already decides for itself whether a line names it, so `@all`
+and `@here` need no protocol change, no server state and no per-room
+subscriber list, and a new client tags people on an old server. The `@` is
+required for the room tags — `@all` is a tag, a bare `all` is a word — while
+a personal name keeps matching with or without the sigil, so the rule stays
+the one sentence D76 describes. `@here` is an alias for `@all` rather than an
+away-aware variant: the client does know who is away, but a second tag whose
+only difference is who it skips is a distinction to add when someone asks for
+it. Completion offers the tags after an `@` so the feature is discoverable
+from the keyboard, which is the only place it is documented besides the help
+overlay.

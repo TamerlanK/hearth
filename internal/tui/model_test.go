@@ -492,8 +492,29 @@ func TestSendingADMOpensItsTabAndSurvivesRefresh(t *testing.T) {
 		t.Error("a rooms refresh kept a room the server no longer has")
 	}
 	m = feed(t, m, tea.KeyMsg{Type: tea.KeyCtrlN})
-	if m.current != "@carol" {
-		t.Errorf("Ctrl+N with one room and one DM moved to %q", m.current)
+	if m.current != "#general" {
+		t.Errorf("Ctrl+N from the DM moved to %q, want #general", m.current)
+	}
+}
+
+func TestLeavingADMTabNeverRejoinsTheRoom(t *testing.T) {
+	for _, back := range []string{"", "/join general", "/join #general"} {
+		m := joined(t, 100, 30)
+		m = feed(t, m, event(protocol.Event{Kind: protocol.PrivMsg, From: "alice", To: "bob", Text: "hey"}))
+		if m.current != "@bob" || m.room != "#general" {
+			t.Fatalf("after the DM: current = %q, room = %q", m.current, m.room)
+		}
+		if back == "" {
+			m = feed(t, m, pressed(tea.KeyCtrlN))
+		} else {
+			m = feed(t, m, typed(back), pressed(tea.KeyEnter))
+		}
+		if m.current != "#general" {
+			t.Errorf("%q left the view at %q, want #general", back, m.current)
+		}
+		if got := texts(m, "#general"); slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, "already in") }) {
+			t.Errorf("%q produced %q", back, got)
+		}
 	}
 }
 
@@ -529,6 +550,10 @@ func TestMentionsAreCountedAndRingTheBell(t *testing.T) {
 		{"at-mention with punctuation", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "@alice!"}, true},
 		{"name as a prefix of a longer word", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "alice2 is here"}, false},
 		{"own message naming myself", protocol.Event{Kind: protocol.Msg, Room: "#golang", From: "alice", Text: "alice here"}, false},
+		{"@all tags the whole room", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "@all standup now"}, true},
+		{"@here is the same tag", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "who is @HERE?"}, true},
+		{"a bare all is not a tag", protocol.Event{Kind: protocol.Msg, Room: "#general", From: "bob", Text: "all hands at five"}, false},
+		{"my own @all", protocol.Event{Kind: protocol.Msg, Room: "#golang", From: "alice", Text: "@all ship it"}, false},
 		{"private message", protocol.Event{Kind: protocol.PrivMsg, From: "bob", To: "alice", Text: "psst"}, true},
 		{"system notice", protocol.Event{Kind: protocol.System, Text: "alice"}, false},
 	}
@@ -537,14 +562,14 @@ func TestMentionsAreCountedAndRingTheBell(t *testing.T) {
 			t.Errorf("%s: bell = %v, want %v", tt.name, got, tt.want)
 		}
 	}
-	if r := m.rooms["#general"]; r.unread != 4 || r.mentions != 2 {
-		t.Errorf("#general unread = %d, mentions = %d; want 4 and 2", r.unread, r.mentions)
+	if r := m.rooms["#general"]; r.unread != 7 || r.mentions != 4 {
+		t.Errorf("#general unread = %d, mentions = %d; want 7 and 4", r.unread, r.mentions)
 	}
 	if r := m.rooms["@bob"]; r.unread != 1 || r.mentions != 1 {
 		t.Errorf("@bob unread = %d, mentions = %d; want 1 and 1", r.unread, r.mentions)
 	}
 	view := plain(m.View())
-	for _, want := range []string{"#general (2) @4", "@bob @1"} {
+	for _, want := range []string{"#general (2) @7", "@bob @1"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("sidebar lacks %q:\n%s", want, view)
 		}
@@ -566,7 +591,7 @@ func TestStatusBarShowsUnreadFocusAndTheLastError(t *testing.T) {
 		rows := lines(m.View())
 		return rows[len(rows)-1]
 	}
-	if got := bar(); !strings.Contains(got, "focus: input") || strings.Contains(got, "unread") {
+	if got := bar(); !strings.Contains(got, "F1: help") || strings.Contains(got, "unread") {
 		t.Fatalf("initial status bar = %q", got)
 	}
 	m = feed(t, m,
@@ -578,12 +603,12 @@ func TestStatusBarShowsUnreadFocusAndTheLastError(t *testing.T) {
 		t.Errorf("status bar = %q, want the unread and mention totals", got)
 	}
 	m = feed(t, m, pressed(tea.KeyTab))
-	if got := bar(); !strings.Contains(got, "focus: messages") {
-		t.Errorf("status bar = %q, want focus: messages", got)
+	if got := bar(); !strings.Contains(got, "messages · Tab to type") {
+		t.Errorf("status bar = %q, want the messages pane hint", got)
 	}
 	m = feed(t, m, pressed(tea.KeyTab))
-	if got := bar(); !strings.Contains(got, "focus: rooms") {
-		t.Errorf("status bar = %q, want focus: rooms", got)
+	if got := bar(); !strings.Contains(got, "rooms · Enter opens") {
+		t.Errorf("status bar = %q, want the rooms pane hint", got)
 	}
 	m = feed(t, m, pressed(tea.KeyTab), typed("/dance"), pressed(tea.KeyEnter))
 	if got := bar(); !strings.Contains(got, "! ") || !strings.Contains(got, "dance") {
@@ -716,5 +741,38 @@ func TestLogFileGetsEveryLine(t *testing.T) {
 	}
 	if n := strings.Count(got, "\n"); n != 2 {
 		t.Errorf("log file has %d lines, want 2", n)
+	}
+}
+
+func TestEmptyScreenOrientsAndHelpFitsEveryTerminal(t *testing.T) {
+	got := plain(fresh(t, 100, 30).View())
+	for _, want := range []string{"You are alice on chat.example.com:4000", "/join #room", "F1", "Tab"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a fresh screen never mentions %q:\n%s", want, got)
+		}
+	}
+	for _, size := range [][2]int{{200, 40}, {100, 30}, {80, 24}, {60, 20}, {40, 16}, {24, 8}} {
+		m := fresh(t, size[0], size[1])
+		m.help = true
+		rows := lines(m.View())
+		if len(rows) > size[1] {
+			t.Errorf("%dx%d: help is %d rows tall", size[0], size[1], len(rows))
+		}
+		for _, row := range rows {
+			if w := lipgloss.Width(row); w > size[0] {
+				t.Errorf("%dx%d: help row is %d wide: %q", size[0], size[1], w, row)
+			}
+		}
+	}
+}
+
+func TestEscLeavesAPaneForTheInput(t *testing.T) {
+	m := feed(t, joined(t, 100, 30), pressed(tea.KeyTab))
+	if m.focus != paneMessages {
+		t.Fatalf("focus = %v, want paneMessages", m.focus)
+	}
+	m = feed(t, m, pressed(tea.KeyEsc))
+	if m.focus != paneInput || !m.input.Focused() {
+		t.Errorf("Esc left focus at %v (input focused: %v)", m.focus, m.input.Focused())
 	}
 }

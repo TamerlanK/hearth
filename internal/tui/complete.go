@@ -9,6 +9,8 @@ import (
 
 const closeCommand = "close"
 
+var everyone = []string{"@all", "@here"}
+
 type completion struct {
 	head  string
 	tail  string
@@ -40,8 +42,13 @@ func candidates(line []rune, pos int, rooms, users []string) (int, []string) {
 	case first == "/join" || first == "/who" || first == "/history":
 		pool = append(pool, rooms...)
 		word = "#" + strings.TrimPrefix(word, "#")
-	default:
+	case !strings.HasPrefix(word, "@"):
 		pool = users
+	default:
+		pool = append(pool, everyone...)
+		for _, u := range users {
+			pool = append(pool, "@"+u)
+		}
 	}
 	var out []string
 	for _, cand := range pool {

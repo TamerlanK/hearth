@@ -9,6 +9,23 @@ the release workflow groups a GitHub Release's notes by.
 
 ### Added
 
+- **TUI**: tagging. `@name` tags one person and `@all` or `@here` tags everyone
+  in the room, each of whom gets the highlighted line, the `@` badge and the
+  bell; `Tab` after an `@` completes a name or a room tag.
+- **TUI**: an empty room explains itself — who you are, where you are, and the
+  keys and commands worth knowing — instead of showing a blank pane.
+
+### Changed
+
+- **TUI**: the help overlay (`F1`) lays keys and commands out in two columns
+  and fits any terminal down to the 24x6 minimum; it used to overflow and lose
+  its border on a 30-row screen. The status bar advertises `F1: help`, which
+  works everywhere, rather than `?`, which the input pane types as a character,
+  and it names the focused pane and the way back to typing only when you are
+  not typing. `Esc` returns to the input from any pane.
+
+### Added
+
 - **Security**: `serve --tls-cert`/`--tls-key` serve TLS on the chat listener,
   and `serve --token` requires a shared secret from every client, compared in
   constant time. JSON clients send it as `HELLO hearth/1 json token=…`; text
